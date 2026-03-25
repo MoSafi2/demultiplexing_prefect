@@ -77,7 +77,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Optional contamination after QC: kraken (Kraken2 only), "
-            "kraken_bracken (Bracken only; expects Kraken reports under outdir), "
+            "kraken_bracken (Kraken2 then Bracken; same DB path as kraken after bracken-build), "
             "or fastq_screen (default: disabled)."
         ),
     )
@@ -86,14 +86,21 @@ def _build_parser() -> argparse.ArgumentParser:
         required=False,
         type=Path,
         default=None,
-        help="Kraken2 DB path (required with --contamination-tool kraken).",
+        help=(
+            "Kraken2 DB path (required for --contamination-tool kraken; "
+            "for kraken_bracken use this or --bracken-db, typically the same directory)."
+        ),
     )
     parser.add_argument(
         "--bracken-db",
         required=False,
         type=Path,
         default=None,
-        help="Bracken database path (required with --contamination-tool kraken_bracken).",
+        help=(
+            "Kraken2 DB directory used by Bracken (-d; run bracken-build there after "
+            "installing a Kraken2 index). For kraken_bracken, omit if --kraken-db is set "
+            "(same path)."
+        ),
     )
     parser.add_argument(
         "--fastq-screen-conf",
@@ -128,10 +135,13 @@ def _validate_args(
         if args.kraken_db is None:
             parser.error("--kraken-db is required when --contamination-tool kraken.")
     if args.contamination_tool == "kraken_bracken":
-        if args.bracken_db is None:
+        if args.bracken_db is None and args.kraken_db is None:
             parser.error(
-                "--bracken-db is required when --contamination-tool kraken_bracken."
+                "--bracken-db or --kraken-db is required when --contamination-tool "
+                "kraken_bracken (both point at the same Kraken2 directory after bracken-build)."
             )
+        if args.bracken_db is None:
+            args.bracken_db = args.kraken_db
     if args.contamination_tool == "fastq_screen" and args.fastq_screen_conf is None:
         parser.error(
             "--fastq-screen-conf is required when --contamination-tool fastq_screen."

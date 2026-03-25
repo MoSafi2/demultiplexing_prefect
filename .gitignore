@@ -2,3 +2,5 @@ test/qc_smoke_out
 *.pyc
 data/
 bcl-convert
+# Regenerate with: pixi run bowtie2-build examples/phix174.fa examples/phix_bowtie2/PhiX
+examples/phix_bowtie2/*.bt2

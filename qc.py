@@ -7,6 +7,9 @@ from typing import Any
 
 from prefect import task, get_run_logger  # type: ignore[import-not-found]
 
+# Lets MultiQC pick up Bracken `-w` reports (see multiqc_config.yaml).
+MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
+
 from demux import BCL_CONVERT_OUTDIR_NAME
 from models import Sample
 
@@ -82,7 +85,10 @@ def run_multiqc(
         )
         return
 
-    cmd = ["multiqc", "-o", str(multiqc_out), *inputs]
+    cmd: list[str] = ["multiqc"]
+    if MULTIQC_PROJECT_CONFIG.is_file():
+        cmd.extend(["-c", str(MULTIQC_PROJECT_CONFIG)])
+    cmd.extend(["-o", str(multiqc_out), *inputs])
     logger.info("multiqc: %s", " ".join(cmd))
     _run(cmd)
 

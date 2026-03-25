@@ -9,9 +9,40 @@ This repository contains a small, easy-to-read Prefect 2 pipeline that runs `fas
   - `fastp` (for `--qc-tool fastp`)
   - `falco` (for `--qc-tool falco`)
   - (optional) `kraken2` (for `--contamination-tool kraken`)
+  - (optional) `bracken` (for `--contamination-tool kraken_bracken`; see minimal DB below)
   - (optional) `fastq_screen` (for `--contamination-tool fastq_screen`)
+  - (optional) `bowtie2` (for FastQ Screen when using the default Bowtie2 aligner)
 - Python 3.10+
 - Pixi installed (to manage the Python environment)
+
+### Pip-only Python deps
+
+If you already manage bioinformatics tools elsewhere, install Python packages with:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Smallest reference data (dev / smoke tests)
+
+**Kraken2 + Bracken (smallest pre-built Kraken2 index):** use the *Viral* build from the [Kraken 2 index zone](https://benlangmead.github.io/aws-indexes/k2) (~0.5 GB download, ~0.6 GB on disk). Download a `k2_viral_*.tar.gz` bundle, extract to a directory, then generate Bracken k-mer distributions in that same directory (Bracken’s `-d` must point at the Kraken database folder):
+
+```bash
+# Example after extracting k2_viral — pick the tarball date from the index page.
+bracken-build -d /path/to/k2_viral -t 8 -k 35 -l 150
+```
+
+Use `/path/to/k2_viral` for both `--kraken-db` (Kraken2) and `--bracken-db` (Bracken) when you run Kraken then Bracken on the same build. For `--contamination-tool kraken_bracken` alone, this repo still expects existing Kraken reports under `outdir/contamination/kraken/`.
+
+**FastQ Screen (smallest useful screen):** this repo includes `examples/phix174.fa` (RefSeq NC_001422.1) and `examples/fastq_screen_minimal.conf`. Build a Bowtie2 index once, from the repository root:
+
+```bash
+pixi install   # if needed
+cd examples
+pixi run bowtie2-build phix174.fa phix_bowtie2/PhiX
+```
+
+Then pass `--fastq-screen-conf` pointing at `examples/fastq_screen_minimal.conf`. Relative `DATABASE` paths in that file are rewritten to absolute paths beside the config when the pipeline runs, so the working directory does not need to be the repo root.
 
 ## Install
 

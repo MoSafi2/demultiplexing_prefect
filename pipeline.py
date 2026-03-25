@@ -9,7 +9,7 @@ from prefect.task_runners import ThreadPoolTaskRunner
 
 from models import Sample
 from qc import run_fastqc, run_fastp, run_falco, run_multiqc
-from contamination import run_bracken, run_fastq_screen, run_kraken2
+from contamination import run_fastq_screen, run_kraken2, run_kraken_bracken
 from demux import BCL_CONVERT_OUTDIR_NAME, demux_bcl, _samples_from_fastq_dir
 
 
@@ -113,17 +113,6 @@ def _map_qc_tasks(
         return run_falco.map(sample=samples, outdir=bases)
 
 
-def _kraken_report_stub_for_bracken(sample: Sample, outdir: Path) -> dict:
-    report = (
-        outdir
-        / "contamination"
-        / "kraken"
-        / sample.name
-        / f"{sample.name}.kraken.report"
-    )
-    return {"sample": sample.name, "report": str(report)}
-
-
 def _map_contamination_tasks(
     samples: List[Sample],
     contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
@@ -146,13 +135,23 @@ def _map_contamination_tasks(
             kraken_db=[Path(kraken_db)] * n,
         )
     if tool == "kraken_bracken":
-        if not bracken_db:
-            raise SystemExit("kraken_bracken (Bracken-only) requires bracken_db")
-        kraken_inputs = [_kraken_report_stub_for_bracken(s, outdir) for s in samples]
-        return run_bracken.map(
-            kraken_result=kraken_inputs,
+        if kraken_db is not None:
+            kraken_path = Path(kraken_db)
+            bracken_path = Path(bracken_db) if bracken_db is not None else kraken_path
+        elif bracken_db is not None:
+            bracken_path = Path(bracken_db)
+            kraken_path = bracken_path
+        else:
+            raise SystemExit(
+                "kraken_bracken requires kraken_db and/or bracken_db "
+                "(same Kraken2 directory after bracken-build)."
+            )
+        return run_kraken_bracken.map(
+            sample=samples,
             outdir=[outdir] * n,
-            bracken_db=[Path(bracken_db)] * n,
+            kraken_db=[kraken_path] * n,
+            bracken_db=[bracken_path] * n,
+            threads=[per_task_threads] * n,
             read_length=[read_length] * n,
         )
     elif tool == "fastq_screen":

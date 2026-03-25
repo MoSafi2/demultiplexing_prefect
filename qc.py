@@ -32,7 +32,8 @@ def _run(cmd: list[str]) -> None:
         logger.info(line.rstrip())
 
     for line in proc.stderr or []:
-        logger.error(line.rstrip())
+        # Many QC CLIs (fastqc, fastp, multiqc, falco) write normal progress to stderr.
+        logger.info(line.rstrip())
 
     proc.wait()
 

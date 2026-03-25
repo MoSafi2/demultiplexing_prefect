@@ -104,7 +104,8 @@ def _run(cmd: list[str]) -> None:
         logger.info(line.rstrip())
 
     for line in proc.stderr or []:
-        logger.error(line.rstrip())
+        # bcl-convert and similar tools often log progress on stderr.
+        logger.info(line.rstrip())
 
     proc.wait()
 

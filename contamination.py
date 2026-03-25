@@ -27,7 +27,8 @@ def _run(cmd: list[str]) -> None:
         logger.info(line.rstrip())
 
     for line in proc.stderr or []:
-        logger.error(line.rstrip())
+        # External tools often use stderr for progress; only raise below on non-zero exit.
+        logger.info(line.rstrip())
 
     proc.wait()
 

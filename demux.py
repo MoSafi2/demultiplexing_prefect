@@ -8,10 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from prefect import flow, get_run_logger, task  # type: ignore[import-not-found]
-
-from QC.flow import fastq_qc_flow
-from QC.models import Sample
-from contamination.flow import contamination_flow
+from .models import Sample
 
 
 _FASTQ_WITH_LANE_RE = re.compile(
@@ -172,29 +169,6 @@ def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
                 f.write(f"{s.name}\t{str(s.r1)}\n")
 
 
-@flow(name="bcl-demux-fastqs", log_prints=True)
-def demux_bcl_to_fastqs(
-    bcl_dir: Path,
-    samplesheet: Path,
-    outdir: Path | str,
-    manifest_tsv: Path | None = None,
-) -> list[Sample]:
-    """
-    Demultiplex BCL input with bcl-convert and produce merged per-sample FASTQs.
-
-    Outputs:
-      - `${outdir}/demux_fastq/` : raw bcl-convert output
-      - `${outdir}/demux_fastq/combined/` : merged per-sample FASTQs
-      - manifest TSV : by default `${outdir}/qc_inputs/samples.tsv`
-    """
-    return _demux_bcl_to_fastqs_impl(
-        bcl_dir=Path(bcl_dir),
-        samplesheet=Path(samplesheet),
-        outdir=Path(outdir),
-        manifest_tsv=manifest_tsv,
-    )
-
-
 def _demux_bcl_to_fastqs_impl(
     *,
     bcl_dir: Path,
@@ -211,7 +185,9 @@ def _demux_bcl_to_fastqs_impl(
     if not bcl_dir.exists() or not bcl_dir.is_dir():
         raise SystemExit(f"Expected --bcl_dir to be an existing directory: {bcl_dir}")
     if not samplesheet.exists() or not samplesheet.is_file():
-        raise SystemExit(f"Expected --samplesheet to be an existing file: {samplesheet}")
+        raise SystemExit(
+            f"Expected --samplesheet to be an existing file: {samplesheet}"
+        )
 
     if manifest_tsv is None:
         manifest_tsv = outdir / "qc_inputs" / "samples.tsv"
@@ -243,9 +219,13 @@ def _demux_bcl_to_fastqs_impl(
     _run(cmd)
 
     logger.info("Preparing samples from demux FASTQs under %s", demux_fastq_dir)
-    samples = _prepare_samples_from_fastqs(demux_fastq_dir, combined_fastq_dir=combined_fastq_dir)
+    samples = _prepare_samples_from_fastqs(
+        demux_fastq_dir, combined_fastq_dir=combined_fastq_dir
+    )
 
-    logger.info("Writing QC manifest TSV (%d sample(s)) to %s", len(samples), manifest_tsv)
+    logger.info(
+        "Writing QC manifest TSV (%d sample(s)) to %s", len(samples), manifest_tsv
+    )
     _write_samples_tsv(samples, manifest_tsv)
 
     return samples
@@ -265,66 +245,3 @@ def demux_bcl_to_fastqs_task(
         outdir=Path(outdir),
         manifest_tsv=manifest_tsv,
     )
-
-
-@flow(name="bcl-demux-qc", log_prints=True)
-def demux_bcl_to_qc(
-    bcl_dir: Path,
-    samplesheet: Path,
-    outdir: Path | str,
-    mode: str,
-    threads: int = 4,
-) -> None:
-    """
-    Demultiplex BCL input with bcl-convert and feed resulting FASTQs into the QC pipeline.
-
-    Output layout:
-      - `${outdir}/demux_fastq/` : bcl-convert output + a `combined/` subdir with merged per-sample FASTQs
-      - `${outdir}/qc/` : reports from `QC.flow.fastq_qc_flow`
-    """
-    logger = get_run_logger()
-    outdir = Path(outdir)
-
-    samples = demux_bcl_to_fastqs(bcl_dir=bcl_dir, samplesheet=samplesheet, outdir=outdir)
-
-    qc_outdir = outdir / "qc"
-    logger.info("Running QC (%s) for %d sample(s) into %s", mode, len(samples), qc_outdir)
-    fastq_qc_flow(samples=samples, outdir=qc_outdir, mode=mode, threads=threads)
-
-
-def run_demux_qc_pipeline(
-    *,
-    bcl_dir: Path,
-    samplesheet: Path,
-    outdir: Path | str,
-    mode: str,
-    threads: int = 4,
-    manifest_tsv: Path | None = None,
-    contamination_tool: str | None = None,
-    kraken_db: Path | None = None,
-    fastq_screen_conf: Path | None = None,
-) -> None:
-    """
-    Plain Python helper that runs the full demux+QC pipeline (no CLI parsing).
-
-    This is useful when you want to orchestrate in-process from your own code.
-    """
-    outdir_path = Path(outdir)
-    samples = demux_bcl_to_fastqs(
-        bcl_dir=bcl_dir,
-        samplesheet=samplesheet,
-        outdir=outdir_path,
-        manifest_tsv=manifest_tsv,
-    )
-    qc_outdir = outdir_path / "qc"
-    fastq_qc_flow(samples=samples, outdir=qc_outdir, mode=mode, threads=threads)
-
-    if contamination_tool:
-        contamination_flow(
-            samples=samples,
-            outdir=qc_outdir,
-            tool=contamination_tool,
-            threads=threads,
-            kraken_db=kraken_db,
-            fastq_screen_conf=fastq_screen_conf,
-        )

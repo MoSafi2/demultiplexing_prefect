@@ -3,7 +3,6 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
 
@@ -28,8 +27,7 @@ def _require_executable(exe: str) -> None:
 @task
 def run_kraken2(
     sample_name: str,
-    r1: Path,
-    r2: Optional[Path],
+    fastq_path: Path,
     outdir: Path,
     threads: int,
     kraken_db: Path,
@@ -54,10 +52,7 @@ def run_kraken2(
         "--output",
         str(output_path),
     ]
-    if r2 is None:
-        cmd.append(str(r1))
-    else:
-        cmd += ["--paired", str(r1), str(r2)]
+    cmd.append(str(fastq_path))
 
     logger.info("kraken2: %s", " ".join(cmd))
     _run(cmd)
@@ -66,8 +61,7 @@ def run_kraken2(
 @task
 def run_fastq_screen(
     sample_name: str,
-    r1: Path,
-    r2: Optional[Path],
+    fastq_path: Path,
     outdir: Path,
     threads: int,
     fastq_screen_conf: Path,
@@ -88,10 +82,7 @@ def run_fastq_screen(
         str(threads),
         "--force",
     ]
-    if r2 is None:
-        cmd.append(str(r1))
-    else:
-        cmd += [str(r1), str(r2)]
+    cmd.append(str(fastq_path))
 
     logger.info("fastq_screen: %s", " ".join(cmd))
     _run(cmd)

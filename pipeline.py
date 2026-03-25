@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from prefect import flow, get_run_logger, task  # type: ignore[import-not-found]
 
@@ -22,7 +22,7 @@ def load_samples_from_manifest_task(manifest_tsv: Path) -> list[Sample]:
     Load samples from a TSV written by `demux.flow.demux_bcl_to_fastqs`.
 
     Format:
-      sample_name<TAB>r1<TAB>r2(optional)
+      sample_name<TAB>path
     """
     manifest_tsv = Path(manifest_tsv)
     logger = get_run_logger()
@@ -40,23 +40,17 @@ def load_samples_from_manifest_task(manifest_tsv: Path) -> list[Sample]:
                 continue
 
             parts = line.split("\t")
-            if len(parts) not in (2, 3):
+            if len(parts) != 2:
                 raise SystemExit(
-                    f"Invalid manifest TSV line {line_num} (expected 2 or 3 columns): {raw_line!r}"
+                    f"Invalid manifest TSV line {line_num} (expected 2 columns): {raw_line!r}"
                 )
 
             sample_name = parts[0]
-            r1_path = Path(parts[1])
-            if not r1_path.exists():
-                raise SystemExit(f"Manifest TSV r1 FASTQ not found: {r1_path}")
+            fq_path = Path(parts[1])
+            if not fq_path.exists():
+                raise SystemExit(f"Manifest TSV FASTQ not found: {fq_path}")
 
-            r2_path: Optional[Path] = None
-            if len(parts) == 3:
-                r2_path = Path(parts[2])
-                if not r2_path.exists():
-                    raise SystemExit(f"Manifest TSV r2 FASTQ not found: {r2_path}")
-
-            samples.append(Sample(name=sample_name, r1=r1_path, r2=r2_path))
+            samples.append(Sample(name=sample_name, path=fq_path))
 
     if not samples:
         logger.warning("Manifest contained no samples: %s", manifest_tsv)
@@ -101,33 +95,22 @@ def load_samples_from_fastq_dir_task(in_fastq_dir: Path) -> list[Sample]:
 
     samples: list[Sample] = []
     for sample_name in sorted(discovered.keys()):
-        r1_paths = discovered[sample_name].get(1, [])
-        if not r1_paths:
-            continue
+        for read in (1, 2):
+            fq_paths = discovered[sample_name].get(read, [])
+            if not fq_paths:
+                continue
 
-        r1_paths = sorted(r1_paths)
-        if len(r1_paths) > 1:
-            logger.warning(
-                "Multiple R1 files found for sample %s; using %s",
-                sample_name,
-                r1_paths[0],
-            )
-        r1_path = r1_paths[0]
-
-        r2_paths = discovered[sample_name].get(2)
-        if r2_paths:
-            r2_paths = sorted(r2_paths)
-            if len(r2_paths) > 1:
+            fq_paths = sorted(fq_paths)
+            if len(fq_paths) > 1:
                 logger.warning(
-                    "Multiple R2 files found for sample %s; using %s",
+                    "Multiple R%d files found for sample %s; using %s",
+                    read,
                     sample_name,
-                    r2_paths[0],
+                    fq_paths[0],
                 )
-            r2_path: Optional[Path] = r2_paths[0]
-        else:
-            r2_path = None
-
-        samples.append(Sample(name=sample_name, r1=r1_path, r2=r2_path))
+            samples.append(
+                Sample(name=f"{sample_name}_R{read}", path=fq_paths[0])
+            )
 
     if not samples:
         raise SystemExit(
@@ -175,7 +158,7 @@ def unified_demux_qc_contamination_pipeline(
     qc_base_dir = outdir_path
 
     mode_norm = (mode or "").lower().strip()
-    if mode_norm in {"demux_qc", "demux-qc", "demuxqc"}:
+    if mode_norm in {"demux_qc", "demux-qc", "demuxqc", "demux"}:
         stage = "demux_qc"
     elif mode_norm in {"qc"}:
         stage = "qc"
@@ -186,6 +169,7 @@ def unified_demux_qc_contamination_pipeline(
     if qc_tool_norm not in {"fastqc", "fastp", "falco"}:
         raise SystemExit(f"Unknown --qc-tool: {qc_tool} (expected fastqc|fastp|falco)")
 
+    samples_future: Any
     if stage == "demux_qc":
         if bcl_dir is None or samplesheet is None:
             raise SystemExit("--mode demux_qc requires --bcl_dir and --samplesheet.")
@@ -196,7 +180,6 @@ def unified_demux_qc_contamination_pipeline(
             outdir=outdir_path,
             manifest_tsv=manifest_tsv,
         )
-        samples = samples_future.result()
     else:
         if (manifest_tsv is None and in_fastq_dir is None) or (
             manifest_tsv and in_fastq_dir
@@ -208,9 +191,14 @@ def unified_demux_qc_contamination_pipeline(
         if manifest_tsv is not None:
             samples_future = load_samples_from_manifest_task(manifest_tsv=manifest_tsv)
         else:
-            samples_future = load_samples_from_fastq_dir_task(in_fastq_dir=in_fastq_dir)
-
-        samples = samples_future.result()
+            if in_fastq_dir is None:
+                raise SystemExit(
+                    "Internal error: in_fastq_dir must be set when manifest_tsv is None."
+                )
+            samples_future = load_samples_from_fastq_dir_task(
+                in_fastq_dir=in_fastq_dir
+            )
+    samples = samples_future.result()
 
     if not samples:
         raise SystemExit("No samples to process.")
@@ -219,15 +207,11 @@ def unified_demux_qc_contamination_pipeline(
     qc_tasks: list[Any] = []
     for sample in samples:
         if qc_tool_norm == "fastqc":
-            qc_tasks.append(
-                run_fastqc(sample.name, sample.r1, sample.r2, qc_base_dir, threads)
-            )
+            qc_tasks.append(run_fastqc(sample.name, sample.path, qc_base_dir, threads))
         elif qc_tool_norm == "fastp":
-            qc_tasks.append(
-                run_fastp(sample.name, sample.r1, sample.r2, qc_base_dir, threads)
-            )
+            qc_tasks.append(run_fastp(sample.name, sample.path, qc_base_dir, threads))
         else:
-            qc_tasks.append(run_falco(sample.name, sample.r1, sample.r2, qc_base_dir))
+            qc_tasks.append(run_falco(sample.name, sample.path, qc_base_dir))
 
     # ---- Optional contamination tasks (no nested flows) ----
     cont_tasks: list[Any] = []
@@ -264,8 +248,7 @@ def unified_demux_qc_contamination_pipeline(
                 cont_tasks.append(
                     run_kraken2(
                         sample_name=sample.name,
-                        r1=sample.r1,
-                        r2=sample.r2,
+                        fastq_path=sample.path,
                         outdir=qc_base_dir,
                         threads=threads,
                         kraken_db=kraken_db_path,
@@ -275,8 +258,7 @@ def unified_demux_qc_contamination_pipeline(
                 cont_tasks.append(
                     run_fastq_screen(
                         sample_name=sample.name,
-                        r1=sample.r1,
-                        r2=sample.r2,
+                        fastq_path=sample.path,
                         outdir=qc_base_dir,
                         threads=threads,
                         fastq_screen_conf=fastq_screen_conf_path,

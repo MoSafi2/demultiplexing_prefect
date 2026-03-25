@@ -1,29 +1,140 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
 
-from prefect import get_run_logger, task  # type: ignore[import-not-found]
-from .models import Sample
+try:
+    # Prefect is only required when running the pipeline task; keep it optional
+    # so that `parse_fastq()` can be unit-tested without Prefect installed.
+    from prefect import get_run_logger, task  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover
+    import logging
+    from typing import Any, Callable
+
+    def task(
+        *_args: Any, **_kwargs: Any
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        # No-op decorator fallback used in unit tests.
+        def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+            return fn
+
+        return decorator
+
+    def get_run_logger() -> logging.Logger:
+        return logging.getLogger("prefect-mock")
 
 
-_FASTQ_WITH_LANE_RE = re.compile(
-    r"^(?P<sample>.+?)_S\d+_L(?P<lane>\d{3})_R(?P<read>[12])_001\.fastq\.gz$",
+try:
+    # Support both "package" usage (`from prefect_qc.demux import ...`) and running
+    # from the repo root (`python -m pytest`).
+    from .models import Sample
+except ImportError:  # pragma: no cover
+    from models import Sample
+
+
+FASTQ_RE = re.compile(
+    r"""^(?P<sample>[A-Za-z0-9_.-]+?)(?:_S\d+)?(?:_L(?P<lane>\d{3}))?_R(?P<read>[12])
+    (?:_(?P<chunk>\d{3}))?\.(?P<ext>fastq|fq)(?:\.gz)?$""",
+    re.VERBOSE | re.IGNORECASE,
 )
-_FASTQ_NO_LANE_RE = re.compile(
-    r"^(?P<sample>.+?)_S\d+_R(?P<read>[12])_001\.fastq\.gz$",
-)
 
 
-def _ensure_dir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
+def parse_fastq(path: Path):
+    m = FASTQ_RE.match(path.name)
+    if not m:
+        return None
+
+    return {
+        "sample": m.group("sample"),
+        "read": int(m.group("read")),
+        "lane": int(m.group("lane")) if m.group("lane") else None,
+        "chunk": int(m.group("chunk")) if m.group("chunk") else 0,
+    }
+
+
+def _group_fastqs(
+    root: Path, *, recursive: bool = True, include_undetermined: bool = False
+) -> dict[tuple[str, int], dict[str, Path]]:
+    iterator = root.rglob("*") if recursive else root.glob("*")
+    grouped: dict[tuple[str, int], dict[str, Path]] = defaultdict(dict)
+    for path in iterator:
+        if not path.is_file():
+            continue
+        if not include_undetermined:
+            # Skip undetermined reads
+            if any("undetermined" in part.lower() for part in path.parts):
+                continue
+        parsed = parse_fastq(path)
+        if not parsed:
+            continue
+        read_key = f"R{parsed['read']}"
+        grouped[parsed["sample"], parsed["chunk"]][read_key] = path
+    return grouped
+
+
+def _samples_from_fastq_dir(
+    root: Path,
+    *,
+    recursive: bool = True,
+    include_undetermined: bool = False,
+) -> list[Sample]:
+    """
+    Discover FASTQ files and return a list of Sample objects.
+
+    Behavior:
+    - Walks directory (recursive by default)
+    - Groups by (sample, chunk)
+    - Each chunk becomes an independent Sample
+    - Supports SE and PE
+    - Optionally filters Undetermined reads
+    """
+
+    grouped = _group_fastqs(
+        root, recursive=recursive, include_undetermined=include_undetermined
+    )
+    samples: list[Sample] = []
+
+    for (sample, chunk), reads in sorted(
+        grouped.items(), key=lambda x: (x[0][0], x[0][1])
+    ):
+        if "R1" not in reads:
+            # skip incomplete units
+            continue
+        samples.append(Sample(name=sample, r1=reads["R1"], r2=reads.get("R2")))
+
+    return samples
+
+
+def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
+    with path.open("w") as f:
+        for sample in samples:
+            f.write(f"{sample.name}\t{sample.r1}\t{sample.r2}\n")
 
 
 def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True)
+    logger = get_run_logger()
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    for line in proc.stdout:
+        logger.info(line.rstrip())
+
+    for line in proc.stderr:
+        logger.error(line.rstrip())
+
+    proc.wait()
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}")
 
 
 def _resolve_bcl_convert_binary() -> str:
@@ -37,148 +148,19 @@ def _resolve_bcl_convert_binary() -> str:
     )
 
 
-def _parse_bcl_fastq_filename(path: Path) -> tuple[str, int] | None:
-    """
-    Extract `(sample_name, read)` from BCL Convert output filenames.
-
-    Expected patterns (examples):
-      - `SampleID_S1_L001_R1_001.fastq.gz`
-      - `SampleID_S1_R1_001.fastq.gz` (when lane splitting is disabled)
-    """
-
-    m = _FASTQ_WITH_LANE_RE.match(path.name)
-    if m is not None:
-        sample = m.group("sample")
-        read = int(m.group("read"))
-        return sample, read
-
-    m = _FASTQ_NO_LANE_RE.match(path.name)
-    if m is not None:
-        sample = m.group("sample")
-        read = int(m.group("read"))
-        return sample, read
-
-    return None
-
-
-def _concat_gzip_members(output_path: Path, input_paths: list[Path]) -> None:
-    """
-    Concatenate gzipped files by concatenating gzip members.
-
-    Most gzip implementations can read concatenated members transparently.
-    """
-
-    if not input_paths:
-        raise ValueError(f"Cannot concat empty input list into {output_path}")
-
-    if output_path.exists():
-        output_path.unlink()
-
-    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    try:
-        with tmp_path.open("wb") as out_f:
-            for p in input_paths:
-                with p.open("rb") as in_f:
-                    shutil.copyfileobj(in_f, out_f)
-        tmp_path.replace(output_path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
-
-
-def _discover_fastqs(demux_fastq_dir: Path) -> dict[str, dict[int, list[Path]]]:
-    """
-    Return mapping: sample_name -> {1: [r1 paths], 2: [r2 paths]}.
-    """
-
-    fastqs = list(demux_fastq_dir.rglob("*.fastq.gz"))
-    if not fastqs:
-        raise SystemExit(f"No .fastq.gz files found under {demux_fastq_dir}")
-
-    discovered: dict[str, dict[int, list[Path]]] = {}
-
-    for fq in fastqs:
-        parsed = _parse_bcl_fastq_filename(fq)
-        if parsed is None:
-            continue
-        sample, read = parsed
-        discovered.setdefault(sample, {}).setdefault(read, []).append(fq)
-
-    if not discovered:
-        raise SystemExit(
-            f"Found {len(fastqs)} .fastq.gz files under {demux_fastq_dir}, "
-            "but none matched the expected BCL Convert filename patterns "
-            "(e.g. *_S#_L###_R1_001.fastq.gz)."
-        )
-
-    # Sort members so concatenation is deterministic (by filename).
-    for sample in discovered:
-        for read in (1, 2):
-            if read in discovered[sample]:
-                discovered[sample][read] = sorted(
-                    discovered[sample][read], key=lambda p: p.name
-                )
-
-    return discovered
-
-
-def _prepare_samples_from_fastqs(
-    demux_fastq_dir: Path,
-    combined_fastq_dir: Path,
-) -> list[Sample]:
-    discovered = _discover_fastqs(demux_fastq_dir)
-
-    _ensure_dir(combined_fastq_dir)
-
-    samples: list[Sample] = []
-    for sample_name in sorted(discovered.keys()):
-        r1_members = discovered[sample_name].get(1, [])
-        if not r1_members:
-            continue
-
-        r2_members = discovered[sample_name].get(2)
-
-        r1_out = combined_fastq_dir / f"{sample_name}_R1.fastq.gz"
-        _concat_gzip_members(r1_out, r1_members)
-
-        if r2_members:
-            r2_out = combined_fastq_dir / f"{sample_name}_R2.fastq.gz"
-            _concat_gzip_members(r2_out, r2_members)
-            samples.append(Sample(name=sample_name, r1=r1_out, r2=r2_out))
-        else:
-            samples.append(Sample(name=sample_name, r1=r1_out, r2=None))
-
-    if not samples:
-        raise SystemExit("No samples could be prepared from discovered FASTQs.")
-
-    return samples
-
-
-def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
-    """
-    Write QC manifest TSV in the format:
-      sample_name<TAB>r1<TAB>r2(optional)
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as f:
-        for s in samples:
-            if s.r2 is not None:
-                f.write(f"{s.name}\t{str(s.r1)}\t{str(s.r2)}\n")
-            else:
-                f.write(f"{s.name}\t{str(s.r1)}\n")
-
-
-def _demux_bcl_to_fastqs_impl(
+@task(name="demux_bcl", log_prints=True)
+def demux_bcl(
     *,
     bcl_dir: Path,
     samplesheet: Path,
-    outdir: Path,
-    manifest_tsv: Path | None,
-) -> list[Sample]:
+    outdir: Path | str,
+    extra_args: list[str] | None = None,
+) -> None:
     """
     Implementation used by the `demux_bcl_to_fastqs_task`.
     """
     logger = get_run_logger()
+    outdir = Path(outdir)
 
     if not bcl_dir.exists() or not bcl_dir.is_dir():
         raise SystemExit(f"Expected --bcl_dir to be an existing directory: {bcl_dir}")
@@ -187,59 +169,26 @@ def _demux_bcl_to_fastqs_impl(
             f"Expected --samplesheet to be an existing file: {samplesheet}"
         )
 
-    if manifest_tsv is None:
-        manifest_tsv = outdir / "qc_inputs" / "samples.tsv"
-    manifest_tsv = Path(manifest_tsv)
-
     bcl_bin = _resolve_bcl_convert_binary()
-    demux_fastq_dir = outdir / "demux_fastq"
-    combined_fastq_dir = demux_fastq_dir / "combined"
-
-    _ensure_dir(demux_fastq_dir)
-    _ensure_dir(combined_fastq_dir)
-
-    # If users re-run, we want a clean set of merged per-sample FASTQs.
-    if combined_fastq_dir.exists():
-        for p in combined_fastq_dir.glob("*.fastq.gz"):
-            p.unlink(missing_ok=True)
 
     cmd = [
         bcl_bin,
         "--bcl-input-directory",
         str(bcl_dir),
         "--output-directory",
-        str(demux_fastq_dir),
+        str(outdir),
         "--sample-sheet",
         str(samplesheet),
-        "-f",
     ]
     logger.info("bcl-convert: %s", " ".join(cmd))
     _run(cmd)
 
-    logger.info("Preparing samples from demux FASTQs under %s", demux_fastq_dir)
-    samples = _prepare_samples_from_fastqs(
-        demux_fastq_dir, combined_fastq_dir=combined_fastq_dir
+
+@task(name="write_fastq_manifest")
+def write_fastq_manifest(
+    input_dir: Path, output_path: Path, include_undetermined: bool = False
+) -> None:
+    samples = _samples_from_fastq_dir(
+        input_dir, include_undetermined=include_undetermined
     )
-
-    logger.info(
-        "Writing QC manifest TSV (%d sample(s)) to %s", len(samples), manifest_tsv
-    )
-    _write_samples_tsv(samples, manifest_tsv)
-
-    return samples
-
-
-@task(name="demux_bcl_to_fastqs_task", log_prints=True)
-def demux_bcl_to_fastqs_task(
-    bcl_dir: Path,
-    samplesheet: Path,
-    outdir: Path | str,
-    manifest_tsv: Path | None = None,
-) -> list[Sample]:
-    """Task wrapper around :func:`_demux_bcl_to_fastqs_impl`."""
-    return _demux_bcl_to_fastqs_impl(
-        bcl_dir=Path(bcl_dir),
-        samplesheet=Path(samplesheet),
-        outdir=Path(outdir),
-        manifest_tsv=manifest_tsv,
-    )
+    _write_samples_tsv(samples, output_path)

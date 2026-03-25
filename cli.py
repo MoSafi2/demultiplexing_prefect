@@ -83,10 +83,10 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str]) -> None:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-
+def _validate_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
+    """Validate command line arguments."""
+    
+    args = parser.parse_args()
     if args.mode.lower() == "demux":
         if args.bcl_dir is None or args.samplesheet is None:
             parser.error("--mode demux requires --bcl_dir and --samplesheet.")
@@ -105,6 +105,13 @@ def main(argv: list[str]) -> None:
         parser.error(
             "--fastq-screen-conf is required when --contamination-tool fastq_screen."
         )
+
+    return args
+
+
+def main(argv: list[str]) -> None:
+    parser = _build_parser()
+    args = _validate_args(parser)
 
     unified_demux_qc_contamination_pipeline(
         mode=args.mode,

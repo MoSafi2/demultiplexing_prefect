@@ -3,10 +3,9 @@ from __future__ import annotations
 import subprocess
 import shutil
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from prefect import task, get_run_logger  # type: ignore[import-not-found]
-
 from .models import Sample
 
 
@@ -15,8 +14,26 @@ def _ensure_dir(path: Path) -> None:
 
 
 def _run(cmd: list[str]) -> None:
-    # Keep output in Prefect logs for easier debugging.
-    subprocess.run(cmd, check=True)
+    logger = get_run_logger()
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    for line in proc.stdout:
+        logger.info(line.rstrip())
+
+    for line in proc.stderr:
+        logger.error(line.rstrip())
+
+    proc.wait()
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}")
 
 
 @task
@@ -49,7 +66,9 @@ def run_multiqc(outdir: Path, _qc_tasks: list[Any]) -> None:
     ]
     inputs = [str(p) for p in candidate_dirs if p.exists()]
     if not inputs:
-        logger.warning("No QC output directories found under %s; skipping multiqc.", outdir)
+        logger.warning(
+            "No QC output directories found under %s; skipping multiqc.", outdir
+        )
         return
 
     cmd = ["multiqc", "-o", str(multiqc_out), *inputs]
@@ -57,64 +76,51 @@ def run_multiqc(outdir: Path, _qc_tasks: list[Any]) -> None:
     _run(cmd)
 
 
-@task
-def run_fastqc(sample_name: str, r1: Path, r2: Optional[Path], outdir: Path, threads: int) -> None:
+@task(tags=["qc"])
+def run_fastqc(sample: Sample, outdir: Path) -> None:
     logger = get_run_logger()
     fastqc_dir = outdir / "fastqc"
     _ensure_dir(fastqc_dir)
-
-    cmd = [
-        "fastqc",
-        "--threads",
-        str(threads),
-        "--outdir",
-        str(fastqc_dir),
-        str(r1),
-    ]
-    if r2 is not None:
-        cmd.append(str(r2))
-
-    logger.info("fastqc: %s", " ".join(cmd))
-    _run(cmd)
-
-
-@task
-def run_fastp(sample_name: str, r1: Path, r2: Optional[Path], outdir: Path, threads: int) -> None:
-    logger = get_run_logger()
-    fastp_dir = outdir / "fastp"
-    trimmed_dir = outdir / "fastp_trimmed"
-    _ensure_dir(fastp_dir)
-    _ensure_dir(trimmed_dir)
-
-    html_path = fastp_dir / f"{sample_name}.html"
-    json_path = fastp_dir / f"{sample_name}.json"
-
-    if r2 is None:
-        out_r1 = trimmed_dir / f"{sample_name}.trimmed.fastq.gz"
-        cmd = [
-            "fastp",
-            "-i",
-            str(r1),
-            "-o",
-            str(out_r1),
-            "--thread",
-            str(threads),
-            "--html",
-            str(html_path),
-            "--json",
-            str(json_path),
-            "--report_title",
-            sample_name,
-        ]
+    if sample.paired:
+        threads = 2
     else:
-        out_r1 = trimmed_dir / f"{sample_name}_R1.trimmed.fastq.gz"
-        out_r2 = trimmed_dir / f"{sample_name}_R2.trimmed.fastq.gz"
+        threads = 1
+    for fastq_path in sample.get_paths():
+        cmd = [
+            "fastqc",
+            "--threads",
+            str(threads),
+            "--outdir",
+            str(fastqc_dir),
+            str(fastq_path),
+        ]
+
+        logger.info("fastqc: %s", " ".join(cmd))
+        _run(cmd)
+
+
+@task(tags=["qc"])
+def run_fastp(sample: Sample, outdir: Path, threads: int) -> Path:
+    logger = get_run_logger()
+
+    fastp_dir = outdir / "fastp"
+    tmp_dir = outdir / "fastp_passthrough"
+    _ensure_dir(fastp_dir)
+    _ensure_dir(tmp_dir)
+
+    html_path = fastp_dir / f"{sample.name}.html"
+    json_path = fastp_dir / f"{sample.name}.json"
+
+    if sample.paired:
+        out_r1 = tmp_dir / f"{sample.name}_R1.fastq.gz"
+        out_r2 = tmp_dir / f"{sample.name}_R2.fastq.gz"
+
         cmd = [
             "fastp",
             "-i",
-            str(r1),
+            str(sample.r1),
             "-I",
-            str(r2),
+            str(sample.r2),
             "-o",
             str(out_r1),
             "-O",
@@ -125,36 +131,59 @@ def run_fastp(sample_name: str, r1: Path, r2: Optional[Path], outdir: Path, thre
             str(html_path),
             "--json",
             str(json_path),
-            "--report_title",
-            sample_name,
-            "--detect_adapter_for_pe",
+            # ---- disable all modifications ----
+            "--disable_length_filtering",
+            "--disable_adapter_trimming",
+            "--disable_quality_filtering",
+            "--disable_trim_poly_g",
+            "--disable_trim_poly_x",
+        ]
+    else:
+        out_r1 = tmp_dir / f"{sample.name}.fastq.gz"
+
+        cmd = [
+            "fastp",
+            "-i",
+            str(sample.r1),
+            "-o",
+            str(out_r1),
+            "--thread",
+            str(threads),
+            "--html",
+            str(html_path),
+            "--json",
+            str(json_path),
+            # ---- disable all modifications ----
+            "--disable_length_filtering",
+            "--disable_adapter_trimming",
+            "--disable_quality_filtering",
+            "--disable_trim_poly_g",
+            "--disable_trim_poly_x",
         ]
 
-    logger.info("fastp: %s", " ".join(cmd))
+    logger.info("fastp (QC-only): %s", " ".join(cmd))
     _run(cmd)
 
+    return out_r1
 
-@task
-def run_falco(sample_name: str, r1: Path, r2: Optional[Path], outdir: Path) -> None:
-    """
-    Run `falco` (FastQC emulation) for a sample.
 
-    falco writes fixed filenames (e.g. `fastqc_report.html`) into the output directory,
-    so we create a per-sample folder to avoid collisions between samples.
-    """
-
+@task(tags=["qc"])
+def run_falco(sample: Sample, outdir: Path) -> None:
     logger = get_run_logger()
-    falco_root = outdir / "falco" / sample_name
-    _ensure_dir(falco_root)
 
-    cmd: list[str] = [
-        "falco",
-        "--outdir",
-        str(falco_root),
-        str(r1),
-    ]
-    if r2 is not None:
-        cmd.append(str(r2))
+    for read, path in [("R1", sample.r1), ("R2", sample.r2)]:
+        if path is None:
+            continue
 
-    logger.info("falco: %s", " ".join(cmd))
-    _run(cmd)
+        falco_dir = outdir / "falco" / f"{sample.name}_{read}"
+        _ensure_dir(falco_dir)
+
+        cmd = [
+            "falco",
+            "--outdir",
+            str(falco_dir),
+            str(path),
+        ]
+
+        logger.info("falco: %s", " ".join(cmd))
+        _run(cmd)

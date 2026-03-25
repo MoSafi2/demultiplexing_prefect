@@ -88,40 +88,27 @@ pixi run python run_qc_smoke_test.py --single --outdir ./qc_smoke_out
 
 Mode outputs are written under `--outdir/<mode>/` and the generated inputs are under `--outdir/inputs/`.
 
-### Single-end
+### QC Input Model
 
-```bash
-pixi run python run_qc.py \
-  --sample-name sample1 \
-  --r1 /path/to/sample1_R1.fastq.gz \
-  --outdir ./qc_out \
-  --threads 4 \
-  --mode fastqc
-```
+This pipeline treats each FASTQ file as an independent `Sample` (single-end at the tool layer).
 
-### Paired-end
+For paired-end inputs, represent them as two manifest rows:
 
-```bash
-pixi run python run_qc.py \
-  --sample-name sample1 \
-  --r1 /path/to/sample1_R1.fastq.gz \
-  --r2 /path/to/sample1_R2.fastq.gz \
-  --outdir ./qc_out \
-  --threads 4 \
-  --mode fastp
-```
+- one for `sampleName_R1` (R1 FASTQ)
+- one for `sampleName_R2` (R2 FASTQ)
 
 ### Multiple samples via TSV
 
 Create a tab-separated manifest `samples.tsv` with columns:
 
-`sample_name<TAB>r1<TAB>r2(optional)`
+`sample_name<TAB>path`
 
 Example:
 
 ```tsv
-sample1\t/path/to/sample1_R1.fastq.gz\t/path/to/sample1_R2.fastq.gz
-sample2\t/path/to/sample2_R1.fastq.gz
+sample1_R1\t/path/to/sample1_R1.fastq.gz
+sample1_R2\t/path/to/sample1_R2.fastq.gz
+sample2_R1\t/path/to/sample2_R1.fastq.gz
 ```
 
 Run:

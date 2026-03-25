@@ -7,10 +7,8 @@ from typing import Any
 
 from prefect import task, get_run_logger  # type: ignore[import-not-found]
 
-try:
-    from .models import Sample
-except ImportError:  # pragma: no cover
-    from models import Sample
+from demux import BCL_CONVERT_OUTDIR_NAME
+from models import Sample
 
 
 def _ensure_dir(path: Path) -> None:
@@ -41,7 +39,6 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(f"Command failed: {' '.join(cmd)}")
 
 
-# TODO: Improve this function to collect QC for also bcl_convert output directories.
 @task
 def run_multiqc(
     outdir: Path,
@@ -71,6 +68,7 @@ def run_multiqc(
     # Feed multiqc only directories that exist to avoid errors.
     # (multiqc can still detect supported modules under these.)
     candidate_dirs = [
+        outdir / BCL_CONVERT_OUTDIR_NAME,
         outdir / "fastqc",
         outdir / "fastp",
         outdir / "falco",

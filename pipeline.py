@@ -9,11 +9,13 @@ from prefect.task_runners import ThreadPoolTaskRunner
 
 from models import Sample
 from qc import run_fastqc, run_fastp, run_falco, run_multiqc
-from contamination import run_fastq_screen, run_kraken_bracken
-from demux import demux_bcl, _samples_from_fastq_dir
+from contamination import run_bracken, run_fastq_screen, run_kraken2
+from demux import BCL_CONVERT_OUTDIR_NAME, demux_bcl, _samples_from_fastq_dir
 
 
-def _allocate_sample_parallelism(thread_budget: int, num_samples: int) -> Tuple[int, int]:
+def _allocate_sample_parallelism(
+    thread_budget: int, num_samples: int
+) -> Tuple[int, int]:
     """
     Allocate concurrent sample tasks (C) and threads per tool invocation (T) so that
     C * T <= thread_budget (with integer floor division for T).
@@ -99,9 +101,7 @@ def _map_qc_tasks(
     n = len(samples)
     bases = [outdir] * n
     if qc_tool_norm == "fastqc":
-        thread_args = [
-            min(per_task_threads, 2 if s.paired else 1) for s in samples
-        ]
+        thread_args = [min(per_task_threads, 2 if s.paired else 1) for s in samples]
         return run_fastqc.map(sample=samples, outdir=bases, threads=thread_args)
     elif qc_tool_norm == "fastp":
         return run_fastp.map(
@@ -113,9 +113,20 @@ def _map_qc_tasks(
         return run_falco.map(sample=samples, outdir=bases)
 
 
+def _kraken_report_stub_for_bracken(sample: Sample, outdir: Path) -> dict:
+    report = (
+        outdir
+        / "contamination"
+        / "kraken"
+        / sample.name
+        / f"{sample.name}.kraken.report"
+    )
+    return {"sample": sample.name, "report": str(report)}
+
+
 def _map_contamination_tasks(
     samples: List[Sample],
-    contamination_tool: Literal["kraken", "fastq_screen"],
+    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
     outdir: Path,
     per_task_threads: int,
     kraken_db: Path | None = None,
@@ -124,16 +135,25 @@ def _map_contamination_tasks(
     read_length: int = 150,
 ) -> PrefectFutureList:
     tool = contamination_tool.lower().strip()
+    n = len(samples)
     if tool == "kraken":
-        if not kraken_db or not bracken_db:
-            raise SystemExit("Kraken + Bracken requires kraken_db and bracken_db")
-        return run_kraken_bracken.map(
+        if not kraken_db:
+            raise SystemExit("Kraken requires kraken_db")
+        return run_kraken2.map(
             sample=samples,
-            outdir=[outdir] * len(samples),
-            kraken_db=[Path(kraken_db)] * len(samples),
-            bracken_db=[Path(bracken_db)] * len(samples),
-            threads=[per_task_threads] * len(samples),
-            read_length=[read_length] * len(samples),
+            outdir=[outdir] * n,
+            threads=[per_task_threads] * n,
+            kraken_db=[Path(kraken_db)] * n,
+        )
+    if tool == "kraken_bracken":
+        if not bracken_db:
+            raise SystemExit("kraken_bracken (Bracken-only) requires bracken_db")
+        kraken_inputs = [_kraken_report_stub_for_bracken(s, outdir) for s in samples]
+        return run_bracken.map(
+            kraken_result=kraken_inputs,
+            outdir=[outdir] * n,
+            bracken_db=[Path(bracken_db)] * n,
+            read_length=[read_length] * n,
         )
     elif tool == "fastq_screen":
         if not fastq_screen_conf:
@@ -161,7 +181,7 @@ def _qc_map_flow(
 @flow(name="contamination-map-phase", log_prints=True)
 def _contamination_map_flow(
     samples: List[Sample],
-    contamination_tool: Literal["kraken", "fastq_screen"],
+    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
     outdir: Path,
     per_task_threads: int,
     kraken_db: Path | None = None,
@@ -208,7 +228,7 @@ def _run_qc_mapped(
 
 def _run_contamination_mapped(
     samples: List[Sample],
-    contamination_tool: Literal["kraken", "fastq_screen"],
+    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
     outdir_path: Path,
     thread_budget: int,
     kraken_db: Path | None = None,
@@ -247,7 +267,7 @@ def qc_only_pipeline(
     outdir: Path | str,
     manifest_tsv: Path | None = None,
     in_fastq_dir: Path | None = None,
-    contamination_tool: Literal["kraken", "fastq_screen"] | None = None,
+    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"] | None = None,
     kraken_db: Path | None = None,
     bracken_db: Path | None = None,
     fastq_screen_conf: Path | None = None,
@@ -295,7 +315,7 @@ def demux_qc_pipeline(
     qc_tool: str = "falco",
     thread_budget: int = 4,
     outdir: Path | str,
-    contamination_tool: Literal["kraken", "fastq_screen"] | None = None,
+    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"] | None = None,
     kraken_db: Path | None = None,
     bracken_db: Path | None = None,
     fastq_screen_conf: Path | None = None,
@@ -304,10 +324,8 @@ def demux_qc_pipeline(
     outdir_path = Path(outdir)
 
     # Demultiplex first
-    demux_bcl(
-        bcl_dir=bcl_dir, samplesheet=samplesheet, outdir=outdir_path
-    ).result()  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
-    samples = _discover_samples(demux_dir=outdir_path)
+    demux_bcl(bcl_dir=bcl_dir, samplesheet=samplesheet, outdir=outdir_path)
+    samples = _discover_samples(demux_dir=outdir_path / BCL_CONVERT_OUTDIR_NAME)
 
     if not samples:
         raise SystemExit("No samples found after demux.")

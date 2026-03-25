@@ -10,6 +10,9 @@ from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from models import Sample
 
 
+# Parent `--outdir` contains this subdirectory with all bcl-convert artifacts (FASTQs, Reports, etc.).
+BCL_CONVERT_OUTDIR_NAME = "output"
+
 FASTQ_RE = re.compile(
     r"""^(?P<sample>[A-Za-z0-9_.-]+?)(?:_S\d+)?(?:_L(?P<lane>\d{3}))?_R(?P<read>[12])
     (?:_(?P<chunk>\d{3}))?\.(?P<ext>fastq|fq)(?:\.gz)?$""",
@@ -92,32 +95,40 @@ def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
 def _run(cmd: list[str]) -> None:
     logger = get_run_logger()
 
-    proc = subprocess.Popen(
+    completed = subprocess.run(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
-        bufsize=1,
+        check=False,
     )
 
-    for line in proc.stdout or []:
-        logger.info(line.rstrip())
+    if completed.stdout:
+        for line in completed.stdout.splitlines():
+            logger.info(line.rstrip())
+    if completed.stderr:
+        for line in completed.stderr.splitlines():
+            logger.info(line.rstrip())
 
-    for line in proc.stderr or []:
-        # bcl-convert and similar tools often log progress on stderr.
-        logger.info(line.rstrip())
-
-    proc.wait()
-
-    if proc.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}")
+    if completed.returncode != 0:
+        detail = (completed.stderr or "").strip()
+        if not detail:
+            detail = (completed.stdout or "").strip() or "(no output)"
+        raise RuntimeError(
+            f"Command failed (exit {completed.returncode}): {' '.join(cmd)}\n{detail}"
+        )
 
 
 def _resolve_bcl_convert_binary() -> str:
+    """Prefer ./bcl-convert (cwd), then copy next to this module, then PATH."""
+    project_root = Path(__file__).resolve().parent
+    for local in (Path.cwd() / "bcl-convert", project_root / "bcl-convert"):
+        if local.is_file():
+            return str(local.resolve())
     # Illumina docs commonly show `bcl-convert`, but some installs ship `bcl_convert`.
     for candidate in ("bcl-convert", "bcl_convert"):
-        if shutil.which(candidate) is not None:
-            return candidate
+        found = shutil.which(candidate)
+        if found is not None:
+            return found
     raise SystemExit(
         "Missing required binary on PATH: bcl-convert (or bcl_convert). "
         "Please install BCL Convert and ensure it is available on your PATH."
@@ -131,12 +142,15 @@ def demux_bcl(
     samplesheet: Path,
     outdir: Path | str,
     extra_args: list[str] | None = None,
+    force: bool = True,
 ) -> None:
     """
     Implementation used by the `demux_bcl_to_fastqs_task`.
     """
     logger = get_run_logger()
     outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    bcl_output = outdir / BCL_CONVERT_OUTDIR_NAME
 
     if not bcl_dir.exists() or not bcl_dir.is_dir():
         raise SystemExit(f"Expected --bcl_dir to be an existing directory: {bcl_dir}")
@@ -152,10 +166,19 @@ def demux_bcl(
         "--bcl-input-directory",
         str(bcl_dir),
         "--output-directory",
-        str(outdir),
+        str(bcl_output),
         "--sample-sheet",
         str(samplesheet),
+        # bcl-convert expects an explicit true/false after this flag (not a bare switch).
+        "--no-lane-splitting",
+        "true",
+        "--bcl-sampleproject-subdirectories",
+        "true",
     ]
+    if force:
+        cmd.append("--force")
+    if extra_args:
+        cmd.extend(extra_args)
     logger.info("bcl-convert: %s", " ".join(cmd))
     _run(cmd)
 

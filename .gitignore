@@ -1,2 +1,4 @@
 test/qc_smoke_out
 *.pyc
+data/
+bcl-convert

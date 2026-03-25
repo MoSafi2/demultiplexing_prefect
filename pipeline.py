@@ -1,274 +1,333 @@
 from __future__ import annotations
 
-import re
-import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Literal, Tuple, cast
 
-from prefect import flow, get_run_logger, task  # type: ignore[import-not-found]
+from prefect import flow, get_run_logger, task
+from prefect.futures import PrefectFutureList
+from prefect.task_runners import ThreadPoolTaskRunner
 
-from .qc import run_falco, run_fastp, run_fastqc, run_multiqc
-from .models import Sample
-from .contamination import run_fastq_screen, run_kraken2
-from .demux import demux_bcl_to_fastqs_task
+from models import Sample
+from qc import run_fastqc, run_fastp, run_falco, run_multiqc
+from contamination import run_fastq_screen, run_kraken_bracken
+from demux import demux_bcl, _samples_from_fastq_dir
 
 
-FASTQ_R1R2_RE = re.compile(r"^(?P<sample>.+?)_R(?P<read>[12])\.fastq\.gz$")
-
-
-@task(name="load_samples_from_manifest")
-def load_samples_from_manifest_task(manifest_tsv: Path) -> list[Sample]:
+def _allocate_sample_parallelism(thread_budget: int, num_samples: int) -> Tuple[int, int]:
     """
-    Load samples from a TSV written by `demux.flow.demux_bcl_to_fastqs`.
+    Allocate concurrent sample tasks (C) and threads per tool invocation (T) so that
+    C * T <= thread_budget (with integer floor division for T).
 
-    Format:
-      sample_name<TAB>path
+    Used for fastp, falco concurrency, kraken/fastq_screen, and as the base T for
+    fastqc before per-sample caps (paired: min(T, 2)).
     """
-    manifest_tsv = Path(manifest_tsv)
+    if thread_budget < 1:
+        raise SystemExit("thread budget must be at least 1")
+    n = num_samples
+    if n < 1:
+        raise SystemExit("internal error: allocate parallelism with zero samples")
+    max_concurrent = min(n, max(1, thread_budget))
+    per_task_threads = max(1, thread_budget // max_concurrent)
+    return max_concurrent, per_task_threads
+
+
+# -------------------------
+# Sample loading tasks
+# -------------------------
+@task
+def load_samples_from_manifest(manifest_tsv: Path) -> List[Sample]:
     logger = get_run_logger()
+    manifest_tsv = Path(manifest_tsv)
 
     if not manifest_tsv.exists() or not manifest_tsv.is_file():
-        raise SystemExit(
-            f"Manifest TSV does not exist or is not a file: {manifest_tsv}"
-        )
+        raise SystemExit(f"Manifest TSV not found: {manifest_tsv}")
 
-    samples: list[Sample] = []
+    samples: List[Sample] = []
     with manifest_tsv.open("r") as f:
-        for line_num, raw_line in enumerate(f, start=1):
-            line = raw_line.strip()
+        for line_num, line in enumerate(f, start=1):
+            line = line.strip()
             if not line:
                 continue
-
             parts = line.split("\t")
             if len(parts) != 2:
                 raise SystemExit(
-                    f"Invalid manifest TSV line {line_num} (expected 2 columns): {raw_line!r}"
+                    f"Invalid manifest line {line_num}: {line!r} (expected 2 columns)"
                 )
-
-            sample_name = parts[0]
-            fq_path = Path(parts[1])
+            sample_name, fq_path_str = parts
+            fq_path = Path(fq_path_str)
             if not fq_path.exists():
-                raise SystemExit(f"Manifest TSV FASTQ not found: {fq_path}")
-
-            samples.append(Sample(name=sample_name, path=fq_path))
+                raise SystemExit(f"FASTQ path not found: {fq_path}")
+            samples.append(Sample(name=sample_name, r1=fq_path))
 
     if not samples:
-        logger.warning("Manifest contained no samples: %s", manifest_tsv)
+        logger.warning("No samples loaded from manifest: %s", manifest_tsv)
 
     return sorted(samples, key=lambda s: s.name)
 
 
-@task(name="load_samples_from_fastq_dir")
-def load_samples_from_fastq_dir_task(in_fastq_dir: Path) -> list[Sample]:
-    """
-    Discover samples under a directory of FASTQs with names like:
-      <sample>_R1.fastq.gz
-      <sample>_R2.fastq.gz (optional)
-    """
+@task
+def load_samples_from_fastq_dir(in_fastq_dir: Path) -> List[Sample]:
     in_fastq_dir = Path(in_fastq_dir)
-    logger = get_run_logger()
-
     if not in_fastq_dir.exists() or not in_fastq_dir.is_dir():
-        raise SystemExit(
-            f"--in-fastq-dir must exist and be a directory: {in_fastq_dir}"
-        )
-
-    discovered: dict[str, dict[int, list[Path]]] = {}
-    fastqs = list(in_fastq_dir.rglob("*.fastq.gz"))
-    if not fastqs:
-        raise SystemExit(f"No .fastq.gz files found under {in_fastq_dir}")
-
-    for fq in fastqs:
-        m = FASTQ_R1R2_RE.match(fq.name)
-        if m is None:
-            continue
-
-        sample_name = m.group("sample")
-        read = int(m.group("read"))
-        discovered.setdefault(sample_name, {}).setdefault(read, []).append(fq)
-
-    if not discovered:
-        raise SystemExit(
-            f"Found {len(fastqs)} .fastq.gz files under {in_fastq_dir}, but none matched "
-            "expected names like *_R1.fastq.gz (and optional *_R2.fastq.gz)."
-        )
-
-    samples: list[Sample] = []
-    for sample_name in sorted(discovered.keys()):
-        for read in (1, 2):
-            fq_paths = discovered[sample_name].get(read, [])
-            if not fq_paths:
-                continue
-
-            fq_paths = sorted(fq_paths)
-            if len(fq_paths) > 1:
-                logger.warning(
-                    "Multiple R%d files found for sample %s; using %s",
-                    read,
-                    sample_name,
-                    fq_paths[0],
-                )
-            samples.append(
-                Sample(name=f"{sample_name}_R{read}", path=fq_paths[0])
-            )
-
-    if not samples:
-        raise SystemExit(
-            "No samples could be discovered from the provided FASTQ directory."
-        )
-
-    return samples
+        raise SystemExit(f"FASTQ directory not found: {in_fastq_dir}")
+    return _samples_from_fastq_dir(in_fastq_dir)
 
 
-@flow(name="unified-demux-qc-contamination", log_prints=True)
-def unified_demux_qc_contamination_pipeline(
-    *,
-    mode: str,
-    qc_tool: str = "falco",
-    threads: int = 4,
-    outdir: Path | str,
-    # demux inputs
-    bcl_dir: Path | None = None,
-    samplesheet: Path | None = None,
-    # qc inputs:
-    #   - when mode == demux_qc: this is an optional manifest TSV output override
-    #   - when mode == qc: this is a required manifest TSV input (if `in_fastq_dir` is not set)
+def _discover_samples(
     manifest_tsv: Path | None = None,
     in_fastq_dir: Path | None = None,
-    # contamination inputs:
-    contamination_tool: str | None = None,
-    kraken_db: Path | None = None,
-    fastq_screen_conf: Path | None = None,
-) -> None:
-    """
-    Unified pipeline:
-      optional demux -> QC -> optional contamination -> MULTIQC (once at the end).
-
-    Output layout (flat relative to `outdir`):
-      - `outdir/demux_fastq/` (when demux is enabled)
-      - `outdir/qc_inputs/` (manifest from demux, when demux is enabled)
-      - `outdir/fastqc|fastp|fastp_trimmed|falco/`
-      - `outdir/contamination/` (when contamination enabled)
-      - `outdir/multiqc/`
-    """
-    logger = get_run_logger()
-    outdir_path = Path(outdir)
-
-    # Keep QC + contamination outputs at the top-level of `outdir` for a flat layout.
-    qc_base_dir = outdir_path
-
-    mode_norm = (mode or "").lower().strip()
-    if mode_norm in {"demux_qc", "demux-qc", "demuxqc", "demux"}:
-        stage = "demux_qc"
-    elif mode_norm in {"qc"}:
-        stage = "qc"
+    demux_dir: Path | None = None,
+) -> List[Sample]:
+    if manifest_tsv:
+        return load_samples_from_manifest(
+            manifest_tsv
+        )  # pyright: ignore[reportAttributeAccessIssue]
+    elif in_fastq_dir:
+        return load_samples_from_fastq_dir(
+            in_fastq_dir
+        )  # pyright: ignore[reportAttributeAccessIssue]
+    elif demux_dir:
+        return _samples_from_fastq_dir(demux_dir, include_undetermined=False)
     else:
-        raise SystemExit(f"Unknown --mode value: {mode} (expected demux_qc or QC)")
+        raise SystemExit("No input provided for sample discovery.")
 
-    qc_tool_norm = (qc_tool or "").lower().strip()
-    if qc_tool_norm not in {"fastqc", "fastp", "falco"}:
-        raise SystemExit(f"Unknown --qc-tool: {qc_tool} (expected fastqc|fastp|falco)")
 
-    samples_future: Any
-    if stage == "demux_qc":
-        if bcl_dir is None or samplesheet is None:
-            raise SystemExit("--mode demux_qc requires --bcl_dir and --samplesheet.")
+def _map_qc_tasks(
+    samples: List[Sample], qc_tool: str, outdir: Path, per_task_threads: int
+) -> PrefectFutureList:
+    qc_tool_norm = qc_tool.lower().strip()
+    n = len(samples)
+    bases = [outdir] * n
+    if qc_tool_norm == "fastqc":
+        thread_args = [
+            min(per_task_threads, 2 if s.paired else 1) for s in samples
+        ]
+        return run_fastqc.map(sample=samples, outdir=bases, threads=thread_args)
+    elif qc_tool_norm == "fastp":
+        return run_fastp.map(
+            sample=samples,
+            outdir=bases,
+            threads=[per_task_threads] * n,
+        )
+    else:  # falco
+        return run_falco.map(sample=samples, outdir=bases)
 
-        samples_future = demux_bcl_to_fastqs_task(
-            bcl_dir=bcl_dir,
-            samplesheet=samplesheet,
-            outdir=outdir_path,
-            manifest_tsv=manifest_tsv,
+
+def _map_contamination_tasks(
+    samples: List[Sample],
+    contamination_tool: Literal["kraken", "fastq_screen"],
+    outdir: Path,
+    per_task_threads: int,
+    kraken_db: Path | None = None,
+    bracken_db: Path | None = None,
+    fastq_screen_conf: Path | None = None,
+    read_length: int = 150,
+) -> PrefectFutureList:
+    tool = contamination_tool.lower().strip()
+    if tool == "kraken":
+        if not kraken_db or not bracken_db:
+            raise SystemExit("Kraken + Bracken requires kraken_db and bracken_db")
+        return run_kraken_bracken.map(
+            sample=samples,
+            outdir=[outdir] * len(samples),
+            kraken_db=[Path(kraken_db)] * len(samples),
+            bracken_db=[Path(bracken_db)] * len(samples),
+            threads=[per_task_threads] * len(samples),
+            read_length=[read_length] * len(samples),
+        )
+    elif tool == "fastq_screen":
+        if not fastq_screen_conf:
+            raise SystemExit("fastq_screen requires config file")
+        return run_fastq_screen.map(
+            sample=samples,
+            outdir=[outdir] * len(samples),
+            threads=[per_task_threads] * len(samples),
+            fastq_screen_conf=[Path(fastq_screen_conf)] * len(samples),
         )
     else:
-        if (manifest_tsv is None and in_fastq_dir is None) or (
-            manifest_tsv and in_fastq_dir
-        ):
-            raise SystemExit(
-                "For --mode qc, provide exactly one of --manifest-tsv or --in-fastq-dir."
-            )
+        raise SystemExit(f"Unknown contamination tool: {contamination_tool}")
 
-        if manifest_tsv is not None:
-            samples_future = load_samples_from_manifest_task(manifest_tsv=manifest_tsv)
-        else:
-            if in_fastq_dir is None:
-                raise SystemExit(
-                    "Internal error: in_fastq_dir must be set when manifest_tsv is None."
-                )
-            samples_future = load_samples_from_fastq_dir_task(
-                in_fastq_dir=in_fastq_dir
-            )
-    samples = samples_future.result()
+
+@flow(name="qc-map-phase", log_prints=True)
+def _qc_map_flow(
+    samples: List[Sample],
+    qc_tool: str,
+    outdir: Path,
+    per_task_threads: int,
+) -> None:
+    _map_qc_tasks(samples, qc_tool, outdir, per_task_threads).result()
+
+
+@flow(name="contamination-map-phase", log_prints=True)
+def _contamination_map_flow(
+    samples: List[Sample],
+    contamination_tool: Literal["kraken", "fastq_screen"],
+    outdir: Path,
+    per_task_threads: int,
+    kraken_db: Path | None = None,
+    bracken_db: Path | None = None,
+    fastq_screen_conf: Path | None = None,
+    read_length: int = 150,
+) -> None:
+    _map_contamination_tasks(
+        samples,
+        contamination_tool,
+        outdir,
+        per_task_threads,
+        kraken_db=kraken_db,
+        bracken_db=bracken_db,
+        fastq_screen_conf=fastq_screen_conf,
+        read_length=read_length,
+    ).result()
+
+
+def _run_qc_mapped(
+    samples: List[Sample],
+    qc_tool: str,
+    outdir_path: Path,
+    thread_budget: int,
+) -> None:
+    logger = get_run_logger()
+    max_workers, per_task_threads = _allocate_sample_parallelism(
+        thread_budget, len(samples)
+    )
+    logger.info(
+        "QC phase: max concurrent samples=%s, per-sample tool threads=%s (budget=%s)",
+        max_workers,
+        per_task_threads,
+        thread_budget,
+    )
+    runner = ThreadPoolTaskRunner(max_workers=max_workers)
+    _qc_map_flow.with_options(task_runner=cast(Any, runner))(
+        samples=samples,
+        qc_tool=qc_tool,
+        outdir=outdir_path,
+        per_task_threads=per_task_threads,
+    )
+
+
+def _run_contamination_mapped(
+    samples: List[Sample],
+    contamination_tool: Literal["kraken", "fastq_screen"],
+    outdir_path: Path,
+    thread_budget: int,
+    kraken_db: Path | None = None,
+    bracken_db: Path | None = None,
+    fastq_screen_conf: Path | None = None,
+    read_length: int = 150,
+) -> None:
+    logger = get_run_logger()
+    max_workers, per_task_threads = _allocate_sample_parallelism(
+        thread_budget, len(samples)
+    )
+    logger.info(
+        "Contamination phase: max concurrent samples=%s, per-sample tool threads=%s (budget=%s)",
+        max_workers,
+        per_task_threads,
+        thread_budget,
+    )
+    runner = ThreadPoolTaskRunner(max_workers=max_workers)
+    _contamination_map_flow.with_options(task_runner=cast(Any, runner))(
+        samples=samples,
+        contamination_tool=contamination_tool,
+        outdir=outdir_path,
+        per_task_threads=per_task_threads,
+        kraken_db=kraken_db,
+        bracken_db=bracken_db,
+        fastq_screen_conf=fastq_screen_conf,
+        read_length=read_length,
+    )
+
+
+@flow(name="qc-only", log_prints=True)
+def qc_only_pipeline(
+    *,
+    qc_tool: str = "falco",
+    thread_budget: int = 4,
+    outdir: Path | str,
+    manifest_tsv: Path | None = None,
+    in_fastq_dir: Path | None = None,
+    contamination_tool: Literal["kraken", "fastq_screen"] | None = None,
+    kraken_db: Path | None = None,
+    bracken_db: Path | None = None,
+    fastq_screen_conf: Path | None = None,
+    read_length: int = 150,
+) -> None:
+    outdir_path = Path(outdir)
+    samples = _discover_samples(manifest_tsv=manifest_tsv, in_fastq_dir=in_fastq_dir)
 
     if not samples:
-        raise SystemExit("No samples to process.")
+        raise SystemExit("No samples found to process.")
 
-    # ---- QC tasks (no nested flows) ----
-    qc_tasks: list[Any] = []
-    for sample in samples:
-        if qc_tool_norm == "fastqc":
-            qc_tasks.append(run_fastqc(sample.name, sample.path, qc_base_dir, threads))
-        elif qc_tool_norm == "fastp":
-            qc_tasks.append(run_fastp(sample.name, sample.path, qc_base_dir, threads))
-        else:
-            qc_tasks.append(run_falco(sample.name, sample.path, qc_base_dir))
-
-    # ---- Optional contamination tasks (no nested flows) ----
-    cont_tasks: list[Any] = []
+    _run_qc_mapped(samples, qc_tool, outdir_path, thread_budget)
+    multiqc_deps: list[Any] = []
     if contamination_tool:
-        tool_norm = contamination_tool.lower().strip()
-        if tool_norm not in {"kraken", "fastq_screen"}:
-            raise SystemExit("--contamination-tool must be one of kraken|fastq_screen.")
-
-        if tool_norm == "kraken":
-            if kraken_db is None:
-                raise SystemExit(
-                    "--kraken-db is required when --contamination-tool kraken."
-                )
-            if shutil.which("kraken2") is None:
-                raise SystemExit("Missing required executable on PATH: kraken2.")
-            kraken_db_path = Path(kraken_db)
-            if not kraken_db_path.exists():
-                raise SystemExit(f"Kraken DB path does not exist: {kraken_db_path}")
-        else:
-            if fastq_screen_conf is None:
-                raise SystemExit(
-                    "--fastq-screen-conf is required when --contamination-tool fastq_screen."
-                )
-            if shutil.which("fastq_screen") is None:
-                raise SystemExit("Missing required executable on PATH: fastq_screen.")
-            fastq_screen_conf_path = Path(fastq_screen_conf)
-            if not fastq_screen_conf_path.exists():
-                raise SystemExit(
-                    f"fastq_screen config file does not exist: {fastq_screen_conf_path}"
-                )
-
-        for sample in samples:
-            if tool_norm == "kraken":
-                cont_tasks.append(
-                    run_kraken2(
-                        sample_name=sample.name,
-                        fastq_path=sample.path,
-                        outdir=qc_base_dir,
-                        threads=threads,
-                        kraken_db=kraken_db_path,
-                    )
-                )
-            else:
-                cont_tasks.append(
-                    run_fastq_screen(
-                        sample_name=sample.name,
-                        fastq_path=sample.path,
-                        outdir=qc_base_dir,
-                        threads=threads,
-                        fastq_screen_conf=fastq_screen_conf_path,
-                    )
-                )
-
-        logger.info(
-            "Contamination enabled (%s) for %d sample(s).", tool_norm, len(samples)
+        _run_contamination_mapped(
+            samples,
+            contamination_tool,
+            outdir_path,
+            thread_budget,
+            kraken_db=kraken_db,
+            bracken_db=bracken_db,
+            fastq_screen_conf=fastq_screen_conf,
+            read_length=read_length,
         )
 
-    # ---- MULTIQC once at the end ----
-    all_tasks = qc_tasks + cont_tasks
-    run_multiqc(qc_base_dir, all_tasks)
+    run_multiqc(
+        outdir_path,
+        multiqc_deps,
+        include_contamination=bool(contamination_tool),
+    )
+
+
+# -------------------------
+# Main pipeline flow
+# -------------------------
+# Demux uses bcl-convert as a single subprocess; it may use more CPU threads internally
+# than `thread_budget`. The budget applies to QC and contamination parallel stages.
+
+
+@flow(name="demux-qc", log_prints=True)
+def demux_qc_pipeline(
+    *,
+    bcl_dir: Path,
+    samplesheet: Path,
+    qc_tool: str = "falco",
+    thread_budget: int = 4,
+    outdir: Path | str,
+    contamination_tool: Literal["kraken", "fastq_screen"] | None = None,
+    kraken_db: Path | None = None,
+    bracken_db: Path | None = None,
+    fastq_screen_conf: Path | None = None,
+    read_length: int = 150,
+) -> None:
+    outdir_path = Path(outdir)
+
+    # Demultiplex first
+    demux_bcl(
+        bcl_dir=bcl_dir, samplesheet=samplesheet, outdir=outdir_path
+    ).result()  # pyright: ignore[reportAttributeAccessIssue, reportOptionalMemberAccess]
+    samples = _discover_samples(demux_dir=outdir_path)
+
+    if not samples:
+        raise SystemExit("No samples found after demux.")
+
+    _run_qc_mapped(samples, qc_tool, outdir_path, thread_budget)
+    multiqc_deps: list[Any] = []
+    if contamination_tool:
+        _run_contamination_mapped(
+            samples,
+            contamination_tool,
+            outdir_path,
+            thread_budget,
+            kraken_db=kraken_db,
+            bracken_db=bracken_db,
+            fastq_screen_conf=fastq_screen_conf,
+            read_length=read_length,
+        )
+
+    run_multiqc(
+        outdir_path,
+        multiqc_deps,
+        include_contamination=bool(contamination_tool),
+    )

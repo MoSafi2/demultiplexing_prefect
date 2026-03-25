@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from prefect import task, get_run_logger  # type: ignore[import-not-found]
-from .models import Sample
+
+try:
+    from .models import Sample
+except ImportError:  # pragma: no cover
+    from models import Sample
 
 
 def _ensure_dir(path: Path) -> None:
@@ -24,10 +28,10 @@ def _run(cmd: list[str]) -> None:
         bufsize=1,
     )
 
-    for line in proc.stdout:
+    for line in proc.stdout or []:
         logger.info(line.rstrip())
 
-    for line in proc.stderr:
+    for line in proc.stderr or []:
         logger.error(line.rstrip())
 
     proc.wait()
@@ -36,14 +40,21 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(f"Command failed: {' '.join(cmd)}")
 
 
+# TODO: Improve this function to collect QC for also bcl_convert output directories.
 @task
-def run_multiqc(outdir: Path, _qc_tasks: list[Any]) -> None:
+def run_multiqc(
+    outdir: Path,
+    _qc_tasks: list[Any],
+    *,
+    include_contamination: bool = False,
+) -> None:
     """
     Collect QC results into a single MultiQC report.
 
     This is intentionally tolerant:
     - if `multiqc` is missing from PATH, we log a warning and skip.
     - we only pass input directories that actually exist under `outdir`.
+    - contamination outputs are included only when `include_contamination` is true.
     """
     logger = get_run_logger()
 
@@ -62,8 +73,9 @@ def run_multiqc(outdir: Path, _qc_tasks: list[Any]) -> None:
         outdir / "fastqc",
         outdir / "fastp",
         outdir / "falco",
-        outdir / "contamination",
     ]
+    if include_contamination:
+        candidate_dirs.append(outdir / "contamination")
     inputs = [str(p) for p in candidate_dirs if p.exists()]
     if not inputs:
         logger.warning(
@@ -77,14 +89,12 @@ def run_multiqc(outdir: Path, _qc_tasks: list[Any]) -> None:
 
 
 @task(tags=["qc"])
-def run_fastqc(sample: Sample, outdir: Path) -> None:
+def run_fastqc(sample: Sample, outdir: Path, threads: int) -> None:
     logger = get_run_logger()
     fastqc_dir = outdir / "fastqc"
     _ensure_dir(fastqc_dir)
-    if sample.paired:
-        threads = 2
-    else:
-        threads = 1
+    if threads < 1:
+        raise ValueError("run_fastqc threads must be >= 1")
     for fastq_path in sample.get_paths():
         cmd = [
             "fastqc",
@@ -136,7 +146,6 @@ def run_fastp(sample: Sample, outdir: Path, threads: int) -> Path:
             "--disable_adapter_trimming",
             "--disable_quality_filtering",
             "--disable_trim_poly_g",
-            "--disable_trim_poly_x",
         ]
     else:
         out_r1 = tmp_dir / f"{sample.name}.fastq.gz"
@@ -158,7 +167,6 @@ def run_fastp(sample: Sample, outdir: Path, threads: int) -> Path:
             "--disable_adapter_trimming",
             "--disable_quality_filtering",
             "--disable_trim_poly_g",
-            "--disable_trim_poly_x",
         ]
 
     logger.info("fastp (QC-only): %s", " ".join(cmd))

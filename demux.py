@@ -6,33 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-try:
-    # Prefect is only required when running the pipeline task; keep it optional
-    # so that `parse_fastq()` can be unit-tested without Prefect installed.
-    from prefect import get_run_logger, task  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # pragma: no cover
-    import logging
-    from typing import Any, Callable
-
-    def task(
-        *_args: Any, **_kwargs: Any
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        # No-op decorator fallback used in unit tests.
-        def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-            return fn
-
-        return decorator
-
-    def get_run_logger() -> logging.Logger:
-        return logging.getLogger("prefect-mock")
-
-
-try:
-    # Support both "package" usage (`from prefect_qc.demux import ...`) and running
-    # from the repo root (`python -m pytest`).
-    from .models import Sample
-except ImportError:  # pragma: no cover
-    from models import Sample
+from prefect import get_run_logger, task  # type: ignore[import-not-found]
+from models import Sample
 
 
 FASTQ_RE = re.compile(
@@ -125,10 +100,10 @@ def _run(cmd: list[str]) -> None:
         bufsize=1,
     )
 
-    for line in proc.stdout:
+    for line in proc.stdout or []:
         logger.info(line.rstrip())
 
-    for line in proc.stderr:
+    for line in proc.stderr or []:
         logger.error(line.rstrip())
 
     proc.wait()

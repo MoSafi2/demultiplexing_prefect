@@ -1,0 +1,66 @@
+"""Smoke checks for `qc_only_pipeline` (mocked CLIs for speed)."""
+
+from __future__ import annotations
+
+import gzip
+import importlib.util
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest  # type: ignore[import-not-found]
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_repo_module(name: str, relative_path: str):
+    path = REPO_ROOT / relative_path
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _import_pipeline():
+    """Load `pipeline.py` without going through `import demux` package shadowing."""
+    if "pipeline" in sys.modules and hasattr(
+        sys.modules["pipeline"], "qc_only_pipeline"
+    ):
+        return sys.modules["pipeline"]
+    _load_repo_module("models", "models.py")
+    _load_repo_module("demux", "demux.py")
+    _load_repo_module("qc", "qc.py")
+    _load_repo_module("contamination", "contamination.py")
+    return _load_repo_module("pipeline", "pipeline.py")
+
+
+def _tiny_gz(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wb") as f:
+        f.write(b"@r/1\nACGT\n+\nIIII\n")
+
+
+def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
+    pipeline_mod = _import_pipeline()
+    fq = tmp_path / "sample_S1_L001_R1_001.fastq.gz"
+    _tiny_gz(fq)
+    manifest = tmp_path / "manifest.tsv"
+    manifest.write_text(f"sample\t{fq}\n", encoding="utf-8")
+    outdir = tmp_path / "out"
+
+    with patch.object(
+        pipeline_mod, "_run_qc_mapped", MagicMock()
+    ) as run_qc_mapped, patch.object(
+        pipeline_mod, "run_multiqc", MagicMock()
+    ) as run_mq:
+        pipeline_mod.qc_only_pipeline(
+            qc_tool="falco",
+            thread_budget=1,
+            outdir=outdir,
+            manifest_tsv=manifest,
+        )
+
+    run_qc_mapped.assert_called_once()
+    run_mq.assert_called_once()

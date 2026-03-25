@@ -228,13 +228,14 @@ pixi run python run_pipeline.py \
 ```python
 from pathlib import Path
 
-from demux.flow import run_demux_qc_pipeline
+from pipeline import unified_demux_qc_contamination_pipeline
 
-run_demux_qc_pipeline(
+unified_demux_qc_contamination_pipeline(
+    mode="demux",
+    qc_tool="fastqc",
     bcl_dir=Path("/path/to/BCL_RUN_FOLDER"),
     samplesheet=Path("/path/to/SampleSheet.csv"),
     outdir=Path("./demux_qc_out"),
-    mode="fastqc",
     threads=4,
 )
 ```

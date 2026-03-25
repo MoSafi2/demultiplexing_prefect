@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import argparse
 import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
 
-from prefect import flow, get_run_logger, task  # type: ignore[import-not-found]
+from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from .models import Sample
 
 
@@ -177,8 +176,7 @@ def _demux_bcl_to_fastqs_impl(
     manifest_tsv: Path | None,
 ) -> list[Sample]:
     """
-    Implementation shared by both the public `demux_bcl_to_fastqs` flow
-    and the unified-pipeline `demux_bcl_to_fastqs_task`.
+    Implementation used by the `demux_bcl_to_fastqs_task`.
     """
     logger = get_run_logger()
 

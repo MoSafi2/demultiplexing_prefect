@@ -3,12 +3,9 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
-from prefect import flow, get_run_logger, task  # type: ignore[import-not-found]
-
-from .qc import run_multiqc
-from .models import Sample
+from prefect import get_run_logger, task  # type: ignore[import-not-found]
 
 
 def _ensure_dir(path: Path) -> None:

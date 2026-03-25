@@ -28,7 +28,9 @@ def load_samples_from_manifest_task(manifest_tsv: Path) -> list[Sample]:
     logger = get_run_logger()
 
     if not manifest_tsv.exists() or not manifest_tsv.is_file():
-        raise SystemExit(f"Manifest TSV does not exist or is not a file: {manifest_tsv}")
+        raise SystemExit(
+            f"Manifest TSV does not exist or is not a file: {manifest_tsv}"
+        )
 
     samples: list[Sample] = []
     with manifest_tsv.open("r") as f:
@@ -73,7 +75,9 @@ def load_samples_from_fastq_dir_task(in_fastq_dir: Path) -> list[Sample]:
     logger = get_run_logger()
 
     if not in_fastq_dir.exists() or not in_fastq_dir.is_dir():
-        raise SystemExit(f"--in-fastq-dir must exist and be a directory: {in_fastq_dir}")
+        raise SystemExit(
+            f"--in-fastq-dir must exist and be a directory: {in_fastq_dir}"
+        )
 
     discovered: dict[str, dict[int, list[Path]]] = {}
     fastqs = list(in_fastq_dir.rglob("*.fastq.gz"))
@@ -126,7 +130,9 @@ def load_samples_from_fastq_dir_task(in_fastq_dir: Path) -> list[Sample]:
         samples.append(Sample(name=sample_name, r1=r1_path, r2=r2_path))
 
     if not samples:
-        raise SystemExit("No samples could be discovered from the provided FASTQ directory.")
+        raise SystemExit(
+            "No samples could be discovered from the provided FASTQ directory."
+        )
 
     return samples
 
@@ -192,8 +198,12 @@ def unified_demux_qc_contamination_pipeline(
         )
         samples = samples_future.result()
     else:
-        if (manifest_tsv is None and in_fastq_dir is None) or (manifest_tsv and in_fastq_dir):
-            raise SystemExit("For --mode qc, provide exactly one of --manifest-tsv or --in-fastq-dir.")
+        if (manifest_tsv is None and in_fastq_dir is None) or (
+            manifest_tsv and in_fastq_dir
+        ):
+            raise SystemExit(
+                "For --mode qc, provide exactly one of --manifest-tsv or --in-fastq-dir."
+            )
 
         if manifest_tsv is not None:
             samples_future = load_samples_from_manifest_task(manifest_tsv=manifest_tsv)
@@ -209,9 +219,13 @@ def unified_demux_qc_contamination_pipeline(
     qc_tasks: list[Any] = []
     for sample in samples:
         if qc_tool_norm == "fastqc":
-            qc_tasks.append(run_fastqc(sample.name, sample.r1, sample.r2, qc_base_dir, threads))
+            qc_tasks.append(
+                run_fastqc(sample.name, sample.r1, sample.r2, qc_base_dir, threads)
+            )
         elif qc_tool_norm == "fastp":
-            qc_tasks.append(run_fastp(sample.name, sample.r1, sample.r2, qc_base_dir, threads))
+            qc_tasks.append(
+                run_fastp(sample.name, sample.r1, sample.r2, qc_base_dir, threads)
+            )
         else:
             qc_tasks.append(run_falco(sample.name, sample.r1, sample.r2, qc_base_dir))
 
@@ -224,7 +238,9 @@ def unified_demux_qc_contamination_pipeline(
 
         if tool_norm == "kraken":
             if kraken_db is None:
-                raise SystemExit("--kraken-db is required when --contamination-tool kraken.")
+                raise SystemExit(
+                    "--kraken-db is required when --contamination-tool kraken."
+                )
             if shutil.which("kraken2") is None:
                 raise SystemExit("Missing required executable on PATH: kraken2.")
             kraken_db_path = Path(kraken_db)
@@ -232,12 +248,16 @@ def unified_demux_qc_contamination_pipeline(
                 raise SystemExit(f"Kraken DB path does not exist: {kraken_db_path}")
         else:
             if fastq_screen_conf is None:
-                raise SystemExit("--fastq-screen-conf is required when --contamination-tool fastq_screen.")
+                raise SystemExit(
+                    "--fastq-screen-conf is required when --contamination-tool fastq_screen."
+                )
             if shutil.which("fastq_screen") is None:
                 raise SystemExit("Missing required executable on PATH: fastq_screen.")
             fastq_screen_conf_path = Path(fastq_screen_conf)
             if not fastq_screen_conf_path.exists():
-                raise SystemExit(f"fastq_screen config file does not exist: {fastq_screen_conf_path}")
+                raise SystemExit(
+                    f"fastq_screen config file does not exist: {fastq_screen_conf_path}"
+                )
 
         for sample in samples:
             if tool_norm == "kraken":
@@ -263,9 +283,10 @@ def unified_demux_qc_contamination_pipeline(
                     )
                 )
 
-        logger.info("Contamination enabled (%s) for %d sample(s).", tool_norm, len(samples))
+        logger.info(
+            "Contamination enabled (%s) for %d sample(s).", tool_norm, len(samples)
+        )
 
     # ---- MULTIQC once at the end ----
     all_tasks = qc_tasks + cont_tasks
     run_multiqc(qc_base_dir, all_tasks)
-

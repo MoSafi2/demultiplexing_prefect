@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Optional
 
-from prefect import flow, task, get_run_logger  # type: ignore[import-not-found]
+from prefect import task, get_run_logger  # type: ignore[import-not-found]
 
 from .models import Sample
 
@@ -158,44 +158,3 @@ def run_falco(sample_name: str, r1: Path, r2: Optional[Path], outdir: Path) -> N
 
     logger.info("falco: %s", " ".join(cmd))
     _run(cmd)
-
-
-@flow(name="fastq-qc", log_prints=True)
-def fastq_qc_flow(
-    samples: list[Sample],
-    outdir: Path | str,
-    mode: str = "fastqc",
-    threads: int = 4,
-) -> None:
-    """
-    Run FASTQ QC for each sample.
-
-    Outputs:
-      - outdir/fastqc/
-      - outdir/fastp/
-      - outdir/fastp_trimmed/
-      - outdir/falco/<sample_name>/ (when mode includes `falco`)
-      - outdir/multiqc/ (MultiQC summary report)
-    """
-
-    outdir = Path(outdir)
-    _ensure_dir(outdir)
-
-    mode_norm = (mode or "fastqc").lower()
-    run_fastqc_flag = mode_norm == "fastqc"
-    run_fastp_flag = mode_norm == "fastp"
-    run_falco_flag = mode_norm == "falco"
-
-    # Capture per-sample task futures so MultiQC will only run once all of them complete.
-    qc_tasks: list[Any] = []
-
-    for sample in samples:
-        if run_fastqc_flag:
-            qc_tasks.append(run_fastqc(sample.name, sample.r1, sample.r2, outdir, threads))
-        if run_fastp_flag:
-            qc_tasks.append(run_fastp(sample.name, sample.r1, sample.r2, outdir, threads))
-        if run_falco_flag:
-            qc_tasks.append(run_falco(sample.name, sample.r1, sample.r2, outdir))
-
-    # Single collection step at the end, across all generated reports.
-    run_multiqc(outdir, qc_tasks)

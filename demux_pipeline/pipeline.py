@@ -11,15 +11,10 @@ from qc import run_multiqc, submit_qc_tasks
 from contamination import submit_contamination_tasks
 from demux import BCL_CONVERT_OUTDIR_NAME, demux_bcl, _samples_from_fastq_dir
 from observability import (
-    Observer,
-    RunContext,
     create_run_table,
     default_run_name,
-    events_path as _events_path,
-    set_observer,
+    init_run_tracking,
     slugify_run_name,
-    summary_path as _summary_path,
-    utc_now_iso,
 )
 
 
@@ -95,7 +90,9 @@ def _resolve_run_name(
     **_: Any,
 ) -> str:
     mode = "demux" if bcl_dir else "qc"
-    return slugify_run_name(run_name or "") or default_run_name(mode=mode, qc_tool=qc_tool)
+    return slugify_run_name(run_name or "") or default_run_name(
+        mode=mode, qc_tool=qc_tool
+    )
 
 
 @flow(name="demux-pipeline", flow_run_name=_resolve_run_name, log_prints=True)
@@ -126,33 +123,23 @@ def demux_pipeline(
         mode=mode, qc_tool=qc_tool
     )
 
-    events_file = _events_path(outdir_path, resolved)
-    summary_file = _summary_path(outdir_path, resolved)
-    ctx = RunContext(
-        run_name=resolved,
-        outdir=str(outdir_path),
-        mode=mode,
-        qc_tool=qc_tool,
-        contamination_tool=contamination_tool,
-        thread_budget=thread_budget,
-        started_at=utc_now_iso(),
-        inputs={
-            "bcl_dir": str(bcl_dir) if bcl_dir else None,
-            "samplesheet": str(samplesheet) if samplesheet else None,
-            "manifest_tsv": str(manifest_tsv) if manifest_tsv else None,
-            "in_fastq_dir": str(in_fastq_dir) if in_fastq_dir else None,
-        },
+    ctx, observer = init_run_tracking(
+        outdir_path,
+        resolved,
+        mode,
+        qc_tool,
+        contamination_tool,
+        thread_budget,
+        bcl_dir,
+        samplesheet,
+        manifest_tsv,
+        in_fastq_dir,
     )
-    observer = Observer(
-        run_name=resolved, events_file=events_file, summary_file=summary_file
-    )
-    set_observer(observer)
-    observer.pipeline_started(ctx)
     logger = get_run_logger()
-    logger.info("run_name=%s tracking=%s", resolved, events_file.parent)
+    logger.info("run_name=%s tracking=%s", resolved, observer.events_file.parent)
 
     # --- Stage 1: Demux (optional) ---
-    if bcl_dir:
+    if bcl_dir and samplesheet:
         observer.phase_started("demux")
         demux_bcl(
             bcl_dir=bcl_dir,
@@ -181,11 +168,8 @@ def demux_pipeline(
 
     # --- Stages 2 & 3: QC + Contamination (concurrent) ---
     with ThreadPoolTaskRunner(max_workers=max_workers):
-        
         observer.phase_started("qc")
-        futures = submit_qc_tasks(
-            samples, qc_tool, outdir_path, per_task_threads
-        )
+        futures = submit_qc_tasks(samples, qc_tool, outdir_path, per_task_threads)
 
         contam_futures = None
         if contamination_tool:
@@ -203,14 +187,11 @@ def demux_pipeline(
 
         if contam_futures is not None:
             futures.extend(contam_futures)
-            
 
         futures.result()
         observer.phase_finished("qc")
         if contam_futures is not None:
             observer.phase_finished("contamination")
-    
-
 
     # --- Stage 4: MultiQC ---
     observer.phase_started("multiqc")

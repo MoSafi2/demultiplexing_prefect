@@ -147,6 +147,45 @@ def get_observer() -> Observer | None:
     return _current_observer
 
 
+def init_run_tracking(
+    outdir: Path,
+    run_name: str,
+    mode: str,
+    qc_tool: str,
+    contamination_tool: str | None,
+    thread_budget: int,
+    bcl_dir: Path | None,
+    samplesheet: Path | None,
+    manifest_tsv: Path | None,
+    in_fastq_dir: Path | None,
+) -> tuple[RunContext, Observer]:
+    """Create RunContext + Observer and start pipeline tracking."""
+    events_file = events_path(outdir, run_name)
+    summary_file = summary_path(outdir, run_name)
+
+    ctx = RunContext(
+        run_name=run_name,
+        outdir=str(outdir),
+        mode=mode,
+        qc_tool=qc_tool,
+        contamination_tool=contamination_tool,
+        thread_budget=thread_budget,
+        started_at=utc_now_iso(),
+        inputs={
+            "bcl_dir": str(bcl_dir) if bcl_dir else None,
+            "samplesheet": str(samplesheet) if samplesheet else None,
+            "manifest_tsv": str(manifest_tsv) if manifest_tsv else None,
+            "in_fastq_dir": str(in_fastq_dir) if in_fastq_dir else None,
+        },
+    )
+    observer = Observer(
+        run_name=run_name, events_file=events_file, summary_file=summary_file
+    )
+    set_observer(observer)
+    observer.pipeline_started(ctx)
+    return ctx, observer
+
+
 def record_asset(
     path: Path | str,
     *,

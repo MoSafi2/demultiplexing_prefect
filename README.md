@@ -55,23 +55,6 @@ Run:
 pixi run python cli.py --mode {demux|qc} --qc-tool {fastqc|fastp|falco} --outdir OUTDIR --threads N ...
 ```
 
-## Architectural Diagram
-
-```mermaid
-flowchart TD
-  A[BCL run folder] -->|bcl-convert| B[outdir/output/]
-  B --> C[sample discovery]
-  C --> D[QC step<br/>(fastqc OR fastp OR falco)]
-  D --> E{Optional contamination?}
-  E -->|no| F[MultiQC]
-  E -->|yes| G[Contamination step<br/>(Kraken2/Bracken OR FastQ Screen)]
-  G --> F
-
-  subgraph QCOnly[QC only input]
-    H[--manifest-tsv OR --in-fastq-dir] --> C
-  end
-```
-
 ### Demux + QC (`--mode demux`)
 
 ```bash

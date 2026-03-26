@@ -236,6 +236,7 @@ def run_kraken_bracken(
 ) -> dict:
     """
     Convenience wrapper to run Kraken2 followed by Bracken.
+    Kept as a single task to preserve current graph shape/behavior.
     """
 
     kraken_res = run_kraken2.fn(  # call underlying function directly

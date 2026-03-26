@@ -12,8 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-from demux_pipeline.pipeline import qc_only_pipeline  # noqa: E402
+DEMUX_PIPELINE_DIR = REPO_ROOT / "demux_pipeline"
 
 
 def write_tiny_fastq_gz(path: Path, read_name: str = "smoke_read") -> None:
@@ -35,6 +34,14 @@ def _parse_modes(raw: str) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Only adjust PYTHONPATH when the script is actually executed.
+    # This avoids interfering with pytest collection/import of `test/demux/*`.
+    if str(DEMUX_PIPELINE_DIR) not in sys.path:
+        # Pipeline modules use "flat" imports like `from models import Sample`.
+        sys.path.insert(0, str(DEMUX_PIPELINE_DIR))
+
+    from demux_pipeline.pipeline import qc_only_pipeline  # noqa: E402
+
     parser = argparse.ArgumentParser(
         description="Run qc_only_pipeline on synthetic FASTQ.gz files (smoke test).",
     )

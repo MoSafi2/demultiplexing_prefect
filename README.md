@@ -1,259 +1,230 @@
 # Prefect FASTQ QC (fastqc + fastp + falco)
 
-This repository contains a small, easy-to-read Prefect 2 pipeline that runs `fastqc`, `fastp`, and/or `falco` on FASTQ files.
-
-## Requirements
-
-- System tools on your `PATH` (depending on `--mode`):
-  - `fastqc` (for `--qc-tool fastqc`)
-  - `fastp` (for `--qc-tool fastp`)
-  - `falco` (for `--qc-tool falco`)
-  - (optional) `kraken2` (for `--contamination-tool kraken`)
-  - (optional) `bracken` (for `--contamination-tool kraken_bracken`; see minimal DB below)
-  - (optional) `fastq_screen` (for `--contamination-tool fastq_screen`)
-  - (optional) `bowtie2` (for FastQ Screen when using the default Bowtie2 aligner)
-- Python 3.10+
-- Pixi installed (to manage the Python environment)
-
-### Pip-only Python deps
-
-If you already manage bioinformatics tools elsewhere, install Python packages with:
-
-```bash
-pip install -r requirements.txt
-```
-
-### Smallest reference data (dev / smoke tests)
-
-**Kraken2 + Bracken (smallest pre-built Kraken2 index):** use the *Viral* build from the [Kraken 2 index zone](https://benlangmead.github.io/aws-indexes/k2) (~0.5 GB download, ~0.6 GB on disk). Download a `k2_viral_*.tar.gz` bundle, extract to a directory, then generate Bracken k-mer distributions in that same directory (Bracken’s `-d` must point at the Kraken database folder):
-
-```bash
-# Example after extracting k2_viral — pick the tarball date from the index page.
-bracken-build -d /path/to/k2_viral -t 8 -k 35 -l 150
-```
-
-Use `/path/to/k2_viral` for both `--kraken-db` (Kraken2) and `--bracken-db` (Bracken) when you run Kraken then Bracken on the same build. For `--contamination-tool kraken_bracken` alone, this repo still expects existing Kraken reports under `outdir/contamination/kraken/`.
-
-**FastQ Screen (smallest useful screen):** this repo includes `examples/phix174.fa` (RefSeq NC_001422.1) and `examples/fastq_screen_minimal.conf`. Build a Bowtie2 index once, from the repository root:
-
-```bash
-pixi install   # if needed
-cd examples
-pixi run bowtie2-build phix174.fa phix_bowtie2/PhiX
-```
-
-Then pass `--fastq-screen-conf` pointing at `examples/fastq_screen_minimal.conf`. Relative `DATABASE` paths in that file are rewritten to absolute paths beside the config when the pipeline runs, so the working directory does not need to be the repo root.
+Small Prefect 2 pipeline that runs a single QC tool (`fastqc` or `fastp` or `falco`) on FASTQ files, with an optional contamination screening stage (Kraken2/Bracken or FastQ Screen), and then generates a MultiQC report.
 
 ## Install
 
-From this directory (creates a Pixi environment):
+This project uses `pixi`:
 
 ```bash
 pixi install
 ```
 
-## Usage
+## Requirements
 
-All outputs are written under `--outdir`:
+System tools must be on your `PATH` (depending on what you run):
 
-- `outdir/fastqc/` (FastQC reports)
-- `outdir/fastp/` (Fastp HTML + JSON reports)
-- `outdir/fastp_trimmed/` (trimmed FASTQ files)
-- `outdir/falco/<sample_name>/` (Falco output; for `--qc-tool falco`)
-- `outdir/contamination/` (optional; `kraken2` or `fastq_screen` outputs)
-- `outdir/multiqc/` (MultiQC summary report; if `multiqc` is available on PATH)
+* `fastqc` (for `--qc-tool fastqc`)
+* `fastp` (for `--qc-tool fastp`)
+* `falco` (for `--qc-tool falco`)
+* `multiqc` (optional; if missing the pipeline still runs QC/contamination)
+* `bcl-convert` (required for `--mode demux`)
+* optional contamination tools:
+  * `kraken2` (for `--contamination-tool kraken`)
+  * `bracken` (for `--contamination-tool kraken_bracken`)
+  * `fastq_screen` (for `--contamination-tool fastq_screen`)
+  * `bowtie2` (only needed if you want to build a FastQ Screen index yourself)
 
-The unified CLI uses two knobs:
+## Important: import layout
 
-- `--mode` selects the pipeline stage:
-  - `demux_qc`: run demux + QC
-  - `QC`: skip demux; run QC only
-- `--qc-tool` selects exactly one QC program:
-  - `fastqc`: only `fastqc`
-  - `fastp`: only `fastp`
-  - `falco`: only `falco` (default in `run_pipeline.py`)
+The pipeline modules use "flat" imports (for example `from models import Sample`), so they expect `demux_pipeline/` to be on `PYTHONPATH` when imported as modules.
 
-## Pipeline Diagram
+The main CLI is now the top-level `cli.py`, which makes this `PYTHONPATH` implicit for normal CLI usage. The smoke-test helper (`run_qc_smoke_test.py`) also adjusts `sys.path` when executed, so no `PYTHONPATH` is required for smoke tests.
+
+## Output directories
+
+All outputs go under `--outdir`:
+
+* `outdir/output/` (demux mode only; bcl-convert output directory)
+* `outdir/fastqc/` (FastQC reports)
+* `outdir/fastp/` (Fastp HTML + JSON)
+* `outdir/fastp_passthrough/` (Fastp FASTQ outputs; this pipeline disables trimming/filtering)
+* `outdir/falco/<sample>_<R1|R2>/` (Falco output; for `--qc-tool falco`)
+* `outdir/contamination/` (optional; Kraken/Bracken or FastQ Screen outputs)
+* `outdir/multiqc/` (MultiQC summary; created only if `multiqc` is available on PATH)
+
+## Usage (Unified CLI)
+
+The CLI lives here:
+
+* `cli.py`
+
+Run:
+
+```bash
+pixi run python cli.py --mode {demux|qc} --qc-tool {fastqc|fastp|falco} --outdir OUTDIR --threads N ...
+```
+
+## Architectural Diagram
 
 ```mermaid
 flowchart TD
-  subgraph DemuxPlusQC[Demux + QC (`--mode demux_qc`)]
-    A[BCL run folder] --> B[bcl-convert (demux) + merge FASTQs]
-    B --> C[combined FASTQs per sample]
-    C --> D[QC input manifest `samples.tsv`]
+  A[BCL run folder] -->|bcl-convert| B[outdir/output/]
+  B --> C[sample discovery]
+  C --> D[QC step<br/>(fastqc OR fastp OR falco)]
+  D --> E{Optional contamination?}
+  E -->|no| F[MultiQC]
+  E -->|yes| G[Contamination step<br/>(Kraken2/Bracken OR FastQ Screen)]
+  G --> F
+
+  subgraph QCOnly[QC only input]
+    H[--manifest-tsv OR --in-fastq-dir] --> C
   end
-
-  subgraph QConly[QC only (`--mode QC`)]
-    D2[manifest TSV (`--manifest-tsv`) OR FASTQ dir (`--in-fastq-dir`)] --> E[QC tool (choose one): fastqc / fastp / falco]
-  end
-
-  D --> E[QC tool (choose one): fastqc / fastp / falco]
-  E --> F[Optional contamination (kraken2 or fastq_screen)]
-  F --> G[MultiQC summary (if `multiqc` is on PATH)]
 ```
 
-Notes:
-
-- `--contamination-tool` is optional and runs after the FASTQ QC step.
-- If `multiqc` is not installed, the pipeline will still run the underlying QC tools.
-
-## Smoke Test
-
-This repository includes a small smoke-test script that generates tiny synthetic FASTQ files and runs the pipeline using the real `fastqc`/`fastp`/`falco` binaries.
+### Demux + QC (`--mode demux`)
 
 ```bash
-pixi run python run_qc_smoke_test.py --outdir ./qc_smoke_out
+pixi run python cli.py \
+  --mode demux \
+  --qc-tool fastqc \
+  --outdir ./demux_qc_out \
+  --threads 4 \
+  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --samplesheet /path/to/SampleSheet.csv
 ```
 
-Run multiple modes:
+Optional contamination screening (runs after the QC tool):
 
 ```bash
-pixi run python run_qc_smoke_test.py --modes fastqc,fastp,falco --outdir ./qc_smoke_out
+pixi run python cli.py \
+  --mode demux \
+  --qc-tool fastqc \
+  --outdir ./demux_qc_out \
+  --threads 4 \
+  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --samplesheet /path/to/SampleSheet.csv \
+  --contamination-tool kraken_bracken \
+  --kraken-db /path/to/kraken-db
 ```
 
-Single-end (do not generate/use R2):
+FastQ Screen:
 
 ```bash
-pixi run python run_qc_smoke_test.py --single --outdir ./qc_smoke_out
+pixi run python cli.py \
+  --mode demux \
+  --qc-tool fastqc \
+  --outdir ./demux_qc_out \
+  --threads 4 \
+  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --samplesheet /path/to/SampleSheet.csv \
+  --contamination-tool fastq_screen \
+  --fastq-screen-conf /path/to/fastq_screen.conf
 ```
 
-Mode outputs are written under `--outdir/<mode>/` and the generated inputs are under `--outdir/inputs/`.
+Note: in demux mode, this pipeline does *not* write a QC manifest TSV; it discovers samples by scanning `outdir/output/` after bcl-convert finishes.
 
-### QC Input Model
+### QC only (`--mode qc`)
 
-This pipeline treats each FASTQ file as an independent `Sample` (single-end at the tool layer).
+You must provide exactly one of:
 
-For paired-end inputs, represent them as two manifest rows:
+* `--manifest-tsv` (single-end only, 2 columns)
+* `--in-fastq-dir` (supports SE and PE based on FASTQ filename patterns)
 
-- one for `sampleName_R1` (R1 FASTQ)
-- one for `sampleName_R2` (R2 FASTQ)
+#### QC-only from a manifest TSV
 
-### Multiple samples via TSV
+The manifest is tab-separated with exactly 2 columns per non-empty line:
 
-Create a tab-separated manifest `samples.tsv` with columns:
-
-`sample_name<TAB>path`
+`sample_name<TAB>path_to_fastq.gz`
 
 Example:
 
 ```tsv
-sample1_R1\t/path/to/sample1_R1.fastq.gz
-sample1_R2\t/path/to/sample1_R2.fastq.gz
-sample2_R1\t/path/to/sample2_R1.fastq.gz
+sample1	/path/to/sample1_R1.fastq.gz
+sample2	/path/to/sample2.fastq.gz
 ```
 
 Run:
 
 ```bash
-pixi run python run_qc.py \
-  --samples-tsv samples.tsv \
+pixi run python cli.py \
+  --mode qc \
+  --qc-tool falco \
   --outdir ./qc_out \
   --threads 4 \
-  --mode falco
+  --manifest-tsv ./samples.tsv
 ```
 
-### Demux only (BCL -> FASTQs)
+If you need paired-end (R1 + R2) processing, use `--in-fastq-dir` instead.
 
-This runs `bcl-convert` on your Illumina BCL run folder, then merges per-sample FASTQs.
-
-```bash
-pixi run python run_demux.py \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
-  --samplesheet /path/to/SampleSheet.csv \
-  --outdir ./demux_out
-```
-
-It also writes a QC input manifest TSV for later QC runs:
-
-- default: `./demux_out/qc_inputs/samples.tsv`
-
-You can override the manifest path with `--manifest-tsv`.
-
-### Full pipeline (demux + QC)
-
-If you want both steps in one go:
+#### QC-only from a FASTQ directory
 
 ```bash
-pixi run python run_pipeline.py \
-  --mode demux_qc \
-  --qc-tool fastqc \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
-  --samplesheet /path/to/SampleSheet.csv \
-  --outdir ./demux_qc_out \
-  --threads 4
-```
-
-Optional contamination screening can run after the FASTQ QC step:
-
-```bash
-pixi run python run_pipeline.py \
-  --mode demux_qc \
-  --qc-tool fastqc \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
-  --samplesheet /path/to/SampleSheet.csv \
-  --outdir ./demux_qc_out \
+pixi run python cli.py \
+  --mode qc \
+  --qc-tool fastp \
+  --outdir ./qc_out \
   --threads 4 \
-  --contamination-tool kraken \
-  --kraken-db /path/to/kraken-db
+  --in-fastq-dir /path/to/fastqs
 ```
 
-Or using FastQ Screen:
+This directory is scanned recursively and FASTQs are grouped into samples based on an Illumina-ish filename pattern (expects `*_R1*` plus an optional matching `*_R2*`). Incomplete chunks are skipped, and paths containing `undetermined` are skipped by default.
+
+## Reference data shipped in this repo (for quick testing)
+
+### Kraken2 + Bracken (small)
+
+Use the pre-built DB under:
+
+* `data/kraken2_db/`
+
+The contamination code looks up Bracken k-mer distributions for `read_length=150` (this value is currently fixed by the CLI), and this bundled DB includes `database150mers.kmer_distrib`.
+
+Example:
 
 ```bash
-pixi run python run_pipeline.py \
-  --mode demux_qc \
+pixi run python cli.py \
+  --mode qc \
   --qc-tool fastqc \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
-  --samplesheet /path/to/SampleSheet.csv \
-  --outdir ./demux_qc_out \
+  --outdir ./qc_out \
   --threads 4 \
+  --in-fastq-dir /path/to/fastqs \
+  --contamination-tool kraken_bracken \
+  --kraken-db ./data/kraken2_db
+```
+
+### FastQ Screen minimal
+
+The repo includes a minimal PhiX setup:
+
+* `data/fastq_screen/fastq_screen_minimal.conf`
+* `data/fastq_screen/phix174.fa`
+* `data/fastq_screen/phix_bowtie2/`
+
+You can pass the config directly:
+
+```bash
+pixi run python cli.py \
+  --mode qc \
+  --qc-tool fastqc \
+  --outdir ./qc_out \
+  --threads 4 \
+  --in-fastq-dir /path/to/fastqs \
   --contamination-tool fastq_screen \
-  --fastq-screen-conf /path/to/fastq_screen.conf
+  --fastq-screen-conf ./data/fastq_screen/fastq_screen_minimal.conf
 ```
 
-Outputs:
+Relative `DATABASE` entries inside the config are rewritten to absolute paths at runtime by the pipeline.
 
-- `demux_qc_out/demux_fastq/` : raw `bcl-convert` FASTQs
-- `demux_qc_out/demux_fastq/combined/` : merged per-sample `*_R1.fastq.gz` (and `*_R2.fastq.gz` when present)
-- `demux_qc_out/qc_inputs/samples.tsv` : manifest TSV used as input to `run_pipeline.py --mode QC`
-- `demux_qc_out/` : QC reports under `fastqc/`, `fastp/`, `fastp_trimmed/`, `falco/`, and `multiqc/` (depending on `--qc-tool` and installed tools)
-- `demux_qc_out/contamination/` : optional contamination reports (included in `demux_qc_out/multiqc/`)
+## Smoke test
 
-### QC only (from a manifest TSV)
+`run_qc_smoke_test.py` generates tiny synthetic FASTQ.gz files and runs the QC-only flow using real binaries.
 
 ```bash
-pixi run python run_pipeline.py \
-  --mode QC \
-  --qc-tool fastqc \
-  --manifest-tsv /path/to/demux_out/qc_inputs/samples.tsv \
-  --outdir ./qc_out \
-  --threads 4
+pixi run python run_qc_smoke_test.py --outdir ./qc_smoke_out
 ```
 
-### QC only (from an existing FASTQ dir)
+Run multiple tools:
 
 ```bash
-pixi run python run_pipeline.py \
-  --mode QC \
-  --qc-tool fastqc \
-  --in-fastq-dir /path/to/demux_out/demux_fastq/combined \
-  --outdir ./qc_out \
-  --threads 4
+pixi run python run_qc_smoke_test.py \
+  --modes fastqc,fastp,falco \
+  --threads 2 \
+  --outdir ./qc_smoke_out
 ```
 
-### Full pipeline from Python (no CLI)
+Outputs for each mode go under:
 
-```python
-from pathlib import Path
-
-from pipeline import unified_demux_qc_contamination_pipeline
-
-unified_demux_qc_contamination_pipeline(
-    mode="demux",
-    qc_tool="fastqc",
-    bcl_dir=Path("/path/to/BCL_RUN_FOLDER"),
-    samplesheet=Path("/path/to/SampleSheet.csv"),
-    outdir=Path("./demux_qc_out"),
-    threads=4,
-)
-```
+* `OUTDIR/qc_only_<qc_tool>/input/`
+* `OUTDIR/qc_only_<qc_tool>/manifest.tsv`
+* `OUTDIR/qc_only_<qc_tool>/out/` (where `fastqc/`, `fastp/`, `falco/`, and `multiqc/` are written)

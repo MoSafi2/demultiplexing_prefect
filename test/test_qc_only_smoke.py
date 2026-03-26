@@ -29,11 +29,11 @@ def _import_pipeline():
         sys.modules["pipeline"], "qc_only_pipeline"
     ):
         return sys.modules["pipeline"]
-    _load_repo_module("models", "models.py")
-    _load_repo_module("demux", "demux.py")
-    _load_repo_module("qc", "qc.py")
-    _load_repo_module("contamination", "contamination.py")
-    return _load_repo_module("pipeline", "pipeline.py")
+    _load_repo_module("models", "demux_pipeline/models.py")
+    _load_repo_module("demux", "demux_pipeline/demux.py")
+    _load_repo_module("qc", "demux_pipeline/qc.py")
+    _load_repo_module("contamination", "demux_pipeline/contamination.py")
+    return _load_repo_module("pipeline", "demux_pipeline/pipeline.py")
 
 
 def _tiny_gz(path: Path) -> None:

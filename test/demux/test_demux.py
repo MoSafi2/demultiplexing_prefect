@@ -8,9 +8,11 @@ import pytest  # type: ignore[import-not-found]
 # Avoid a naming collision: this directory is `test/demux/`, so importing `demux`
 # would resolve to the test package instead of the repo's `demux.py`.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEMUX_PY = REPO_ROOT / "demux.py"
+DEMUX_PIPELINE_DIR = REPO_ROOT / "demux_pipeline"
+DEMUX_PY = DEMUX_PIPELINE_DIR / "demux.py"
 
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(DEMUX_PIPELINE_DIR))
 
 spec = importlib.util.spec_from_file_location("prefect_demux", DEMUX_PY)
 assert spec is not None and spec.loader is not None

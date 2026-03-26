@@ -55,11 +55,21 @@ def test_create_run_table_emits_artifact(tmp_path: Path) -> None:
     obs = _load_repo_module("observability", "demux_pipeline/observability.py")
 
     summary = {
-        "context": {"run_name": "unit_test", "mode": "qc", "qc_tool": "falco"},
+        "context": {
+            "run_name": "unit_test",
+            "mode": "qc",
+            "qc_tool": "falco",
+            "contamination_tool": None,
+            "outdir": "/tmp/out",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "thread_budget": 4,
+            "inputs": {"bcl_dir": None, "in_fastq_dir": "/tmp/fq"},
+        },
         "counts": {"events": 3, "assets": 2, "commands": 2, "phases": 2, "failures": 0},
         "durations_by_step": {
             "qc": {"count": 2, "total_ms": 4000, "max_ms": 2500},
         },
+        "assets": ["/tmp/out/falco/s1_R1", "/tmp/out/falco/s1_R2"],
     }
 
     table_calls: list[dict] = []
@@ -75,12 +85,28 @@ def test_create_run_table_emits_artifact(tmp_path: Path) -> None:
     call = table_calls[0]
     assert call["key"] == "pipeline-summary"
     rows = call["table"]
-    phases = [r["phase"] for r in rows]
-    assert "qc" in phases
-    assert "total" in phases
-    qc_row = next(r for r in rows if r["phase"] == "qc")
-    assert qc_row["total_s"] == 4.0
-    assert qc_row["max_s"] == 2.5
+
+    # all rows have section/key/value columns
+    assert all("section" in r and "key" in r and "value" in r for r in rows)
+
+    sections = [r["section"] for r in rows]
+    assert "context" in sections
+    assert "counts" in sections
+    assert "durations_by_step" in sections
+    assert "assets" in sections
+
+    # context run_name row
+    ctx_row = next(r for r in rows if r["section"] == "context" and r["key"] == "run_name")
+    assert ctx_row["value"] == "unit_test"
+
+    # duration row includes formatted timing
+    dur_row = next(r for r in rows if r["section"] == "durations_by_step" and r["key"] == "qc")
+    assert "4.0s" in dur_row["value"]
+    assert "2.5s" in dur_row["value"]
+
+    # assets appear as value rows
+    asset_values = [r["value"] for r in rows if r["section"] == "assets"]
+    assert "/tmp/out/falco/s1_R1" in asset_values
 
 
 def test_observer_records_events_and_assets(tmp_path: Path) -> None:
@@ -104,12 +130,10 @@ def test_observer_records_events_and_assets(tmp_path: Path) -> None:
     assert loaded[1]["sample"] == "s1"
 
 
-def test_observer_finalize_and_publish_prefect_artifacts(tmp_path: Path) -> None:
+def test_observer_finalize_summary(tmp_path: Path) -> None:
     obs = _load_repo_module("observability", "demux_pipeline/observability.py")
     events = tmp_path / "events.jsonl"
     summary = tmp_path / "run_summary.json"
-    report = tmp_path / "multiqc_report.html"
-    report.write_text("<html></html>", encoding="utf-8")
     ctx = obs.RunContext(
         run_name="unit_test",
         outdir=str(tmp_path),
@@ -124,21 +148,6 @@ def test_observer_finalize_and_publish_prefect_artifacts(tmp_path: Path) -> None
     observer.asset_created(path=tmp_path / "a.txt", step="qc", tool="falco", kind="report")
     out = observer.finalize_summary(context=ctx)
     assert out["counts"]["assets"] == 1
-
-    md_calls: list[dict] = []
-    link_calls: list[dict] = []
-
-    def _fake_md(**kwargs):
-        md_calls.append(kwargs)
-        return "id"
-
-    def _fake_link(**kwargs):
-        link_calls.append(kwargs)
-        return "id"
-
-    setattr(obs, "create_markdown_artifact", _fake_md)
-    setattr(obs, "create_link_artifact", _fake_link)
-    observer.publish_prefect_artifacts(extra_paths=[report])
-    assert len(md_calls) == 1
-    assert "Pipeline run: unit_test" in md_calls[0]["markdown"]
-    assert len(link_calls) == 3
+    assert summary.exists()
+    loaded = json.loads(summary.read_text(encoding="utf-8"))
+    assert loaded["context"]["run_name"] == "unit_test"

@@ -278,41 +278,54 @@ def finalize_run_summary(
 # ---------------------------------------------------------------------------
 
 def create_run_table(summary: dict[str, Any]) -> None:
-    """Publish one Prefect table artifact summarising the completed pipeline run."""
+    """Publish one Prefect table artifact with the full run summary."""
     try:
-        durations = summary.get("durations_by_step", {})
-        counts = summary.get("counts", {})
         ctx = summary.get("context", {})
+        counts = summary.get("counts", {})
+        durations = summary.get("durations_by_step", {})
+        assets: list[str] = summary.get("assets", [])
         run_name = ctx.get("run_name", "")
 
-        rows: list[dict[str, Any]] = []
+        rows: list[dict[str, str]] = []
+
+        # context
+        for key in ("run_name", "mode", "qc_tool", "contamination_tool",
+                    "outdir", "started_at", "thread_budget"):
+            rows.append({"section": "context", "key": key, "value": str(ctx.get(key, ""))})
+        inputs = ctx.get("inputs") or {}
+        for k, v in inputs.items():
+            rows.append({"section": "context.inputs", "key": k, "value": str(v) if v is not None else ""})
+
+        # counts
+        for key in ("assets", "commands", "events", "failures", "phases"):
+            rows.append({"section": "counts", "key": key, "value": str(counts.get(key, 0))})
+
+        # durations
         for phase in ("demux", "qc", "contamination", "multiqc"):
             d = durations.get(phase)
             if d is None:
                 continue
             rows.append({
-                "phase": phase,
-                "commands": d["count"],
-                "total_s": round(d["total_ms"] / 1000, 1),
-                "max_s": round(d["max_ms"] / 1000, 1),
+                "section": "durations_by_step",
+                "key": phase,
+                "value": (
+                    f"count={d['count']}  "
+                    f"total={round(d['total_ms'] / 1000, 1)}s  "
+                    f"max={round(d['max_ms'] / 1000, 1)}s"
+                ),
             })
 
-        total_ms = sum(d["total_ms"] for d in durations.values())
-        rows.append({
-            "phase": "total",
-            "commands": counts.get("commands", 0),
-            "total_s": round(total_ms / 1000, 1),
-            "max_s": "—",
-        })
+        # assets
+        for path in assets:
+            rows.append({"section": "assets", "key": "", "value": path})
 
-        failures = counts.get("failures", 0)
-        assets = counts.get("assets", 0)
         create_table_artifact(
             table=rows,
             key="pipeline-summary",
             description=(
-                f"run={run_name}  mode={ctx.get('mode','')}  "
-                f"qc={ctx.get('qc_tool','')}  assets={assets}  failures={failures}"
+                f"run={run_name}  mode={ctx.get('mode', '')}  "
+                f"qc={ctx.get('qc_tool', '')}  "
+                f"assets={counts.get('assets', 0)}  failures={counts.get('failures', 0)}"
             ),
         )
     except Exception:

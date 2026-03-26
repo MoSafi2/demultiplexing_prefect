@@ -4,15 +4,31 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Tuple, cast
 
-from prefect import get_run_logger, task  # type: ignore[import-not-found]
+from prefect import flow, get_run_logger, task  # type: ignore[import-not-found]
 from prefect.futures import PrefectFutureList
+from prefect.task_runners import ThreadPoolTaskRunner
 from models import Sample
 
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _allocate_sample_parallelism(thread_budget: int, num_samples: int) -> Tuple[int, int]:
+    """
+    Allocate concurrent sample tasks (C) and threads per tool invocation (T) so that
+    C * T <= thread_budget.
+    """
+    if thread_budget < 1:
+        raise SystemExit("thread budget must be at least 1")
+    if num_samples < 1:
+        raise SystemExit("no samples provided")
+
+    max_workers = min(num_samples, max(1, thread_budget))
+    per_task_threads = max(1, thread_budget // max_workers)
+    return max_workers, per_task_threads
 
 
 def _bowtie2_index_exists(index_prefix: Path) -> bool:
@@ -379,3 +395,48 @@ def submit_contamination_tasks(
             fastq_screen_conf=[Path(fastq_screen_conf)] * n,
         )
     raise SystemExit(f"Unknown contamination tool: {contamination_tool}")
+
+
+@flow(name="contamination_phase", log_prints=True)
+def contamination_phase(
+    samples: list[Sample],
+    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
+    outdir: Path,
+    thread_budget: int,
+    kraken_db: Path | None = None,
+    bracken_db: Path | None = None,
+    fastq_screen_conf: Path | None = None,
+    read_length: int = 150,
+) -> PrefectFutureList:
+    """
+    Run contamination analysis in parallel under a thread budget.
+
+    Returns a `PrefectFutureList` of mapped tasks so callers can await
+    completion by calling `.result()` on the returned object.
+    """
+    logger = get_run_logger()
+    max_workers, per_task_threads = _allocate_sample_parallelism(
+        thread_budget, len(samples)
+    )
+    logger.info(
+        "Contamination phase: max concurrent samples=%s, per-sample tool threads=%s (budget=%s)",
+        max_workers,
+        per_task_threads,
+        thread_budget,
+    )
+    runner = ThreadPoolTaskRunner(max_workers=max_workers)
+
+    @flow(log_prints=True)
+    def _contamination_submit() -> PrefectFutureList:
+        return submit_contamination_tasks(
+            samples=samples,
+            contamination_tool=contamination_tool,
+            outdir=outdir,
+            per_task_threads=per_task_threads,
+            kraken_db=kraken_db,
+            bracken_db=bracken_db,
+            fastq_screen_conf=fastq_screen_conf,
+            read_length=read_length,
+        )
+
+    return _contamination_submit.with_options(task_runner=cast(Any, runner))()

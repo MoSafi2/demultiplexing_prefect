@@ -3,10 +3,11 @@ from __future__ import annotations
 import subprocess
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Tuple, cast
 
-from prefect import task, get_run_logger  # type: ignore[import-not-found]
+from prefect import task, get_run_logger, flow
 from prefect.futures import PrefectFutureList
+from prefect.task_runners import ThreadPoolTaskRunner
 
 # Lets MultiQC pick up Bracken `-w` reports (see multiqc_config.yaml).
 MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
@@ -17,6 +18,25 @@ from models import Sample
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _allocate_sample_parallelism(thread_budget: int, num_samples: int) -> Tuple[int, int]:
+    """
+    Allocate concurrent sample tasks (C) and threads per tool invocation (T) so that
+    C * T <= thread_budget.
+
+    This controls:
+    - **max_workers**: how many samples run concurrently
+    - **per_task_threads**: how many threads each tool invocation should use
+    """
+    if thread_budget < 1:
+        raise SystemExit("thread budget must be at least 1")
+    if num_samples < 1:
+        raise SystemExit("no samples provided")
+
+    max_workers = min(num_samples, max(1, thread_budget))
+    per_task_threads = max(1, thread_budget // max_workers)
+    return max_workers, per_task_threads
 
 
 def _run(cmd: list[str]) -> None:
@@ -226,3 +246,35 @@ def submit_qc_tasks(
     if qc_tool_norm not in dispatch:
         raise SystemExit(f"Unknown QC tool: {qc_tool}")
     return dispatch[qc_tool_norm]()
+
+
+@flow(name="qc_phase", log_prints=True)
+def qc_phase(
+    samples: list[Sample],
+    qc_tool: str,
+    outdir: Path,
+    thread_budget: int,
+) -> PrefectFutureList:
+    """
+    Run QC in parallel under a thread budget.
+
+    Returns a `PrefectFutureList` of the mapped QC tasks so callers can await
+    completion by calling `.result()` on the returned object.
+    """
+    logger = get_run_logger()
+    max_workers, per_task_threads = _allocate_sample_parallelism(
+        thread_budget, len(samples)
+    )
+    logger.info(
+        "QC phase: max concurrent samples=%s, per-sample tool threads=%s (budget=%s)",
+        max_workers,
+        per_task_threads,
+        thread_budget,
+    )
+    runner = ThreadPoolTaskRunner(max_workers=max_workers)
+
+    @flow(log_prints=True)
+    def _qc_submit() -> PrefectFutureList:
+        return submit_qc_tasks(samples, qc_tool, outdir, per_task_threads)
+
+    return _qc_submit.with_options(task_runner=cast(Any, runner))()

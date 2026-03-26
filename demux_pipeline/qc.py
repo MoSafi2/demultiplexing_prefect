@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from prefect import task, get_run_logger  # type: ignore[import-not-found]
+from prefect.futures import PrefectFutureList
 
 # Lets MultiQC pick up Bracken `-w` reports (see multiqc_config.yaml).
 MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
@@ -200,3 +201,28 @@ def run_falco(sample: Sample, outdir: Path) -> None:
 
         logger.info("falco: %s", " ".join(cmd))
         _run(cmd)
+
+
+def submit_qc_tasks(
+    samples: list[Sample], qc_tool: str, outdir: Path, per_task_threads: int
+) -> PrefectFutureList:
+    """Submit mapped QC tasks for all samples."""
+    qc_tool_norm = qc_tool.lower().strip()
+    n = len(samples)
+    outdirs = [outdir] * n
+    dispatch = {
+        "fastqc": lambda: run_fastqc.map(
+            sample=samples,
+            outdir=outdirs,
+            threads=[min(per_task_threads, 2 if s.paired else 1) for s in samples],
+        ),
+        "fastp": lambda: run_fastp.map(
+            sample=samples,
+            outdir=outdirs,
+            threads=[per_task_threads] * n,
+        ),
+        "falco": lambda: run_falco.map(sample=samples, outdir=outdirs),
+    }
+    if qc_tool_norm not in dispatch:
+        raise SystemExit(f"Unknown QC tool: {qc_tool}")
+    return dispatch[qc_tool_norm]()

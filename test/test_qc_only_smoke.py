@@ -51,7 +51,7 @@ def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
     outdir = tmp_path / "out"
 
     with patch.object(
-        pipeline_mod, "_run_qc_mapped", MagicMock()
+        pipeline_mod, "_run_qc_phase", MagicMock()
     ) as run_qc_mapped, patch.object(
         pipeline_mod, "run_multiqc", MagicMock()
     ) as run_mq:

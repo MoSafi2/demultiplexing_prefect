@@ -4,8 +4,10 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
+from prefect.futures import PrefectFutureList
 from models import Sample
 
 
@@ -113,6 +115,59 @@ def run_kraken2(
     threads: int,
     kraken_db: Path,
 ) -> dict:
+    return _run_kraken2_impl(sample=sample, outdir=outdir, threads=threads, kraken_db=kraken_db)
+
+
+@task(tags=["contamination"])
+def run_bracken(
+    kraken_result: dict,
+    outdir: Path,
+    bracken_db: Path,
+    read_length: int,
+    level: str = "S",  # species level
+) -> dict:
+    return _run_bracken_impl(
+        kraken_result=kraken_result,
+        outdir=outdir,
+        bracken_db=bracken_db,
+        read_length=read_length,
+        level=level,
+    )
+
+
+@task(tags=["contamination"])
+def run_kraken_bracken(
+    sample: Sample,
+    outdir: Path,
+    kraken_db: Path,
+    bracken_db: Path,
+    threads: int,
+    read_length: int,
+) -> dict:
+    """Run Kraken2 then Bracken for a single sample."""
+    kraken_res = _run_kraken2_impl(
+        sample=sample,
+        outdir=outdir,
+        threads=threads,
+        kraken_db=kraken_db,
+    )
+    bracken_res = _run_bracken_impl(
+        kraken_result=kraken_res,
+        outdir=outdir,
+        bracken_db=bracken_db,
+        read_length=read_length,
+    )
+
+    return {
+        "sample": sample.name,
+        "kraken": kraken_res,
+        "bracken": bracken_res,
+    }
+
+
+def _run_kraken2_impl(
+    *, sample: Sample, outdir: Path, threads: int, kraken_db: Path
+) -> dict:
     logger = get_run_logger()
     _require_executable("kraken2")
 
@@ -155,13 +210,13 @@ def run_kraken2(
     }
 
 
-@task(tags=["contamination"])
-def run_bracken(
+def _run_bracken_impl(
+    *,
     kraken_result: dict,
     outdir: Path,
     bracken_db: Path,
     read_length: int,
-    level: str = "S",  # species level
+    level: str = "S",
 ) -> dict:
     logger = get_run_logger()
     _require_executable("bracken")
@@ -226,41 +281,6 @@ def run_bracken(
 
 
 @task(tags=["contamination"])
-def run_kraken_bracken(
-    sample: Sample,
-    outdir: Path,
-    kraken_db: Path,
-    bracken_db: Path,
-    threads: int,
-    read_length: int,
-) -> dict:
-    """
-    Convenience wrapper to run Kraken2 followed by Bracken.
-    Kept as a single task to preserve current graph shape/behavior.
-    """
-
-    kraken_res = run_kraken2.fn(  # call underlying function directly
-        sample=sample,
-        outdir=outdir,
-        threads=threads,
-        kraken_db=kraken_db,
-    )
-
-    bracken_res = run_bracken.fn(
-        kraken_result=kraken_res,
-        outdir=outdir,
-        bracken_db=bracken_db,
-        read_length=read_length,
-    )
-
-    return {
-        "sample": sample.name,
-        "kraken": kraken_res,
-        "bracken": bracken_res,
-    }
-
-
-@task(tags=["contamination"])
 def run_fastq_screen(
     sample: Sample,
     outdir: Path,
@@ -309,3 +329,53 @@ def run_fastq_screen(
         "screen": str(reports[0]),
         "screens": [str(p) for p in reports],
     }
+
+
+def submit_contamination_tasks(
+    samples: list[Sample],
+    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
+    outdir: Path,
+    per_task_threads: int,
+    kraken_db: Path | None = None,
+    bracken_db: Path | None = None,
+    fastq_screen_conf: Path | None = None,
+    read_length: int = 150,
+) -> PrefectFutureList:
+    """Submit mapped contamination tasks for all samples."""
+    tool = contamination_tool.lower().strip()
+    n = len(samples)
+    common_args = {
+        "sample": samples,
+        "outdir": [outdir] * n,
+        "threads": [per_task_threads] * n,
+    }
+    if tool == "kraken":
+        if not kraken_db:
+            raise SystemExit("Kraken requires kraken_db")
+        return run_kraken2.map(**common_args, kraken_db=[Path(kraken_db)] * n)
+    if tool == "kraken_bracken":
+        if kraken_db is not None:
+            kraken_path = Path(kraken_db)
+            bracken_path = Path(bracken_db) if bracken_db is not None else kraken_path
+        elif bracken_db is not None:
+            bracken_path = Path(bracken_db)
+            kraken_path = bracken_path
+        else:
+            raise SystemExit(
+                "kraken_bracken requires kraken_db and/or bracken_db "
+                "(same Kraken2 directory after bracken-build)."
+            )
+        return run_kraken_bracken.map(
+            **common_args,
+            kraken_db=[kraken_path] * n,
+            bracken_db=[bracken_path] * n,
+            read_length=[read_length] * n,
+        )
+    if tool == "fastq_screen":
+        if not fastq_screen_conf:
+            raise SystemExit("fastq_screen requires config file")
+        return run_fastq_screen.map(
+            **common_args,
+            fastq_screen_conf=[Path(fastq_screen_conf)] * n,
+        )
+    raise SystemExit(f"Unknown contamination tool: {contamination_tool}")

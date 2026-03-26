@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Literal
+from typing import Any, List, Literal
 
 from prefect import flow, get_run_logger
 from prefect.task_runners import ThreadPoolTaskRunner
@@ -87,7 +87,18 @@ def _discover_samples(
         raise SystemExit("No input provided for sample discovery.")
 
 
-@flow(name="demux-pipeline", log_prints=True)
+def _resolve_run_name(
+    *,
+    run_name: str | None = None,
+    bcl_dir: Path | None = None,
+    qc_tool: str = "falco",
+    **_: Any,
+) -> str:
+    mode = "demux" if bcl_dir else "qc"
+    return slugify_run_name(run_name or "") or default_run_name(mode=mode, qc_tool=qc_tool)
+
+
+@flow(name="demux-pipeline", flow_run_name=_resolve_run_name, log_prints=True)
 def demux_pipeline(
     *,
     # Demux inputs — omit both to run QC-only mode

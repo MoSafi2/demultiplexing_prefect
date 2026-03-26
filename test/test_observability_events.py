@@ -91,7 +91,7 @@ def test_publish_prefect_observability_artifacts_best_effort(tmp_path: Path) -> 
     )
 
     assert len(md_calls) == 1
-    assert md_calls[0]["key"] == "unit_test-summary"
+    assert "key" not in md_calls[0]
     assert "Pipeline run: unit_test" in md_calls[0]["markdown"]
     assert len(link_calls) == 3
     link_texts = {c["link_text"] for c in link_calls}

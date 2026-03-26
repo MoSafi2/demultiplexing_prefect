@@ -221,11 +221,9 @@ def publish_prefect_observability_artifacts(
         )
     markdown_payload = "\n".join(md_lines)
 
-    run_key = slugify_run_name(run_name) or "pipeline-run"
     try:
         create_markdown_artifact(
             markdown=markdown_payload,
-            key=f"{run_key}-summary",
             description=f"Pipeline observability summary for {run_name}",
         )
     except Exception:
@@ -251,7 +249,6 @@ def publish_prefect_observability_artifacts(
             create_link_artifact(
                 link=path.resolve().as_uri(),
                 link_text=link_text,
-                key=f"{run_key}-{slugify_run_name(link_text) or 'asset'}",
                 description=f"Pipeline output for {run_name}",
             )
         except Exception:

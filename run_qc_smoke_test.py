@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline import qc_only_pipeline  # noqa: E402
+from demux_pipeline.pipeline import qc_only_pipeline  # noqa: E402
 
 
 def write_tiny_fastq_gz(path: Path, read_name: str = "smoke_read") -> None:
@@ -28,7 +28,9 @@ def _parse_modes(raw: str) -> list[str]:
     allowed = {"fastqc", "fastp", "falco"}
     unknown = set(modes) - allowed
     if unknown:
-        raise SystemExit(f"Unknown --modes value(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(sorted(allowed))}")
+        raise SystemExit(
+            f"Unknown --modes value(s): {', '.join(sorted(unknown))}. Allowed: {', '.join(sorted(allowed))}"
+        )
     return modes
 
 
@@ -82,7 +84,9 @@ def main(argv: list[str] | None = None) -> None:
         manifest.write_text(f"smoke\t{fq_path}\n", encoding="utf-8")
 
         outdir = run_dir / "out"
-        print(f"Smoke: qc_only_pipeline qc_tool={qc_tool!r} outdir={outdir}", flush=True)
+        print(
+            f"Smoke: qc_only_pipeline qc_tool={qc_tool!r} outdir={outdir}", flush=True
+        )
         qc_only_pipeline(
             qc_tool=qc_tool,
             thread_budget=args.threads,

@@ -153,7 +153,6 @@ def _validate_args(
     return args
 
 
-
 def main(argv: list[str]) -> None:
     parser = _build_parser()
     args = _validate_args(parser)

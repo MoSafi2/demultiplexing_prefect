@@ -22,7 +22,6 @@ def _ensure_dir(path: Path) -> None:
 @task
 def run_multiqc(
     outdir: Path,
-    _qc_tasks: list[Any],
     *,
     include_contamination: bool = False,
 ) -> None:

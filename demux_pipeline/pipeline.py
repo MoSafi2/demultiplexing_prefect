@@ -181,8 +181,9 @@ def demux_pipeline(
 
     # --- Stages 2 & 3: QC + Contamination (concurrent) ---
     with ThreadPoolTaskRunner(max_workers=max_workers):
+        
         observer.phase_started("qc")
-        qc_futures = submit_qc_tasks(
+        futures = submit_qc_tasks(
             samples, qc_tool, outdir_path, per_task_threads
         )
 
@@ -200,17 +201,21 @@ def demux_pipeline(
                 read_length=read_length,
             )
 
-        qc_futures.result()
+        if contam_futures is not None:
+            futures.extend(contam_futures)
+            
+
+        futures.result()
         observer.phase_finished("qc")
         if contam_futures is not None:
-            contam_futures.result()
             observer.phase_finished("contamination")
+    
+
 
     # --- Stage 4: MultiQC ---
     observer.phase_started("multiqc")
     run_multiqc(
         outdir_path,
-        [],
         include_contamination=bool(contamination_tool),
     )
     observer.phase_finished("multiqc")

@@ -8,7 +8,7 @@ from pathlib import Path
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from models import Sample
 from process import run_command
-from observability import Observer
+from observability import record_asset
 
 
 # Parent `--outdir` contains this subdirectory with all bcl-convert artifacts (FASTQs, Reports, etc.).
@@ -116,7 +116,6 @@ def demux_bcl(
     bcl_dir: Path,
     samplesheet: Path,
     outdir: Path | str,
-    observer: Observer,
     extra_args: list[str] | None = None,
     force: bool = True,
 ) -> None:
@@ -156,16 +155,9 @@ def demux_bcl(
     if extra_args:
         cmd.extend(extra_args)
     logger.info("bcl-convert: %s", " ".join(cmd))
-    run_command(
-        cmd,
-        capture_err_tail=80,
-        step="demux",
-        tool="bcl-convert",
-        observer=observer,
-    )
-
-    observer.asset_created(
-        path=bcl_output,
+    run_command(cmd, capture_err_tail=80, step="demux", tool="bcl-convert")
+    record_asset(
+        bcl_output,
         step="demux",
         tool="bcl-convert",
         kind="directory",

@@ -51,51 +51,36 @@ def test_events_jsonl_append_and_summary(tmp_path: Path) -> None:
     assert out["context"]["run_name"] == "t"
 
 
-def test_publish_prefect_observability_artifacts_best_effort(tmp_path: Path) -> None:
+def test_create_run_table_emits_artifact(tmp_path: Path) -> None:
     obs = _load_repo_module("observability", "demux_pipeline/observability.py")
 
-    events = tmp_path / "events.jsonl"
-    summary = tmp_path / "run_summary.json"
-    multiqc = tmp_path / "multiqc_report.html"
-    events.write_text('{"type":"asset_created","path":"x"}\n', encoding="utf-8")
-    summary.write_text(
-        json.dumps(
-            {
-                "context": {"mode": "qc", "qc_tool": "falco", "thread_budget": 1},
-                "counts": {"events": 1, "assets": 1, "commands": 0, "phases": 0, "failures": 0},
-            }
-        ),
-        encoding="utf-8",
-    )
-    multiqc.write_text("<html></html>", encoding="utf-8")
+    summary = {
+        "context": {"run_name": "unit_test", "mode": "qc", "qc_tool": "falco"},
+        "counts": {"events": 3, "assets": 2, "commands": 2, "phases": 2, "failures": 0},
+        "durations_by_step": {
+            "qc": {"count": 2, "total_ms": 4000, "max_ms": 2500},
+        },
+    }
 
-    md_calls: list[dict] = []
-    link_calls: list[dict] = []
+    table_calls: list[dict] = []
 
-    def _fake_md(**kwargs):
-        md_calls.append(kwargs)
+    def _fake_table(**kwargs):
+        table_calls.append(kwargs)
         return "id"
 
-    def _fake_link(**kwargs):
-        link_calls.append(kwargs)
-        return "id"
+    setattr(obs, "create_table_artifact", _fake_table)
+    obs.create_run_table(summary)
 
-    setattr(obs, "create_markdown_artifact", _fake_md)
-    setattr(obs, "create_link_artifact", _fake_link)
-
-    obs.publish_prefect_observability_artifacts(
-        run_name="unit_test",
-        summary_file=summary,
-        events_file=events,
-        extra_paths=[multiqc],
-    )
-
-    assert len(md_calls) == 1
-    assert "key" not in md_calls[0]
-    assert "Pipeline run: unit_test" in md_calls[0]["markdown"]
-    assert len(link_calls) == 3
-    link_texts = {c["link_text"] for c in link_calls}
-    assert {"events.jsonl", "run_summary.json", "multiqc_report.html"} <= link_texts
+    assert len(table_calls) == 1
+    call = table_calls[0]
+    assert call["key"] == "pipeline-summary"
+    rows = call["table"]
+    phases = [r["phase"] for r in rows]
+    assert "qc" in phases
+    assert "total" in phases
+    qc_row = next(r for r in rows if r["phase"] == "qc")
+    assert qc_row["total_s"] == 4.0
+    assert qc_row["max_s"] == 2.5
 
 
 def test_observer_records_events_and_assets(tmp_path: Path) -> None:

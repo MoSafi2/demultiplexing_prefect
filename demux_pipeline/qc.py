@@ -13,7 +13,7 @@ MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
 from demux import BCL_CONVERT_OUTDIR_NAME
 from models import Sample
 from process import run_command
-from observability import Observer
+from observability import record_asset
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -25,7 +25,6 @@ def run_multiqc(
     _qc_tasks: list[Any],
     *,
     include_contamination: bool = False,
-    observer: Observer,
 ) -> None:
     """
     Collect QC results into a single MultiQC report.
@@ -68,28 +67,11 @@ def run_multiqc(
         cmd.extend(["-c", str(MULTIQC_PROJECT_CONFIG)])
     cmd.extend(["-o", str(multiqc_out), *inputs])
     logger.info("multiqc: %s", " ".join(cmd))
-    run_command(
-        cmd,
-        step="multiqc",
-        tool="multiqc",
-        capture_err_tail=80,
-        observer=observer,
-    )
-
-    observer.asset_created(
-        path=multiqc_out,
-        step="multiqc",
-        tool="multiqc",
-        kind="directory",
-    )
+    run_command(cmd, step="multiqc", tool="multiqc", capture_err_tail=80)
+    record_asset(multiqc_out, step="multiqc", tool="multiqc", kind="directory")
     report = multiqc_out / "multiqc_report.html"
     if report.exists():
-        observer.asset_created(
-            path=report,
-            step="multiqc",
-            tool="multiqc",
-            kind="report_html",
-        )
+        record_asset(report, step="multiqc", tool="multiqc", kind="report_html")
 
 
 @task(tags=["qc"])
@@ -97,7 +79,6 @@ def run_fastqc(
     sample: Sample,
     outdir: Path,
     threads: int,
-    observer: Observer,
 ) -> None:
     logger = get_run_logger()
     fastqc_dir = outdir / "fastqc"
@@ -115,22 +96,9 @@ def run_fastqc(
         ]
 
         logger.info("fastqc: %s", " ".join(cmd))
-        run_command(
-            cmd,
-            step="qc",
-            tool="fastqc",
-            sample=sample.name,
-            capture_err_tail=80,
-            observer=observer,
-        )
+        run_command(cmd, step="qc", tool="fastqc", sample=sample.name, capture_err_tail=80)
 
-    observer.asset_created(
-        path=fastqc_dir,
-        step="qc",
-        tool="fastqc",
-        kind="directory",
-        sample=sample.name,
-    )
+    record_asset(fastqc_dir, step="qc", tool="fastqc", kind="directory", sample=sample.name)
 
 
 @task(tags=["qc"])
@@ -138,7 +106,6 @@ def run_fastp(
     sample: Sample,
     outdir: Path,
     threads: int,
-    observer: Observer,
 ) -> Path:
     logger = get_run_logger()
 
@@ -199,35 +166,12 @@ def run_fastp(
         ]
 
     logger.info("fastp (QC-only): %s", " ".join(cmd))
-    run_command(
-        cmd,
-        step="qc",
-        tool="fastp",
-        sample=sample.name,
-        capture_err_tail=80,
-        observer=observer,
-    )
+    run_command(cmd, step="qc", tool="fastp", sample=sample.name, capture_err_tail=80)
 
-    for p, kind in [
-        (html_path, "report_html"),
-        (json_path, "report_json"),
-        (out_r1, "fastq"),
-    ]:
-        observer.asset_created(
-            path=p,
-            step="qc",
-            tool="fastp",
-            kind=kind,
-            sample=sample.name,
-        )
+    for p, kind in [(html_path, "report_html"), (json_path, "report_json"), (out_r1, "fastq")]:
+        record_asset(p, step="qc", tool="fastp", kind=kind, sample=sample.name)
     if sample.paired:
-        observer.asset_created(
-            path=out_r2,
-            step="qc",
-            tool="fastp",
-            kind="fastq",
-            sample=sample.name,
-        )
+        record_asset(out_r2, step="qc", tool="fastp", kind="fastq", sample=sample.name)
 
     return out_r1
 
@@ -236,7 +180,6 @@ def run_fastp(
 def run_falco(
     sample: Sample,
     outdir: Path,
-    observer: Observer,
 ) -> None:
     logger = get_run_logger()
 
@@ -255,21 +198,10 @@ def run_falco(
         ]
 
         logger.info("falco: %s", " ".join(cmd))
-        run_command(
-            cmd,
-            step="qc",
-            tool="falco",
-            sample=sample.name,
-            capture_err_tail=80,
-            observer=observer,
-        )
-        observer.asset_created(
-            path=falco_dir,
-            step="qc",
-            tool="falco",
-            kind="directory",
-            sample=sample.name,
-            metadata={"read": read},
+        run_command(cmd, step="qc", tool="falco", sample=sample.name, capture_err_tail=80)
+        record_asset(
+            falco_dir, step="qc", tool="falco", kind="directory",
+            sample=sample.name, metadata={"read": read},
         )
 
 
@@ -278,8 +210,6 @@ def submit_qc_tasks(
     qc_tool: str,
     outdir: Path,
     per_task_threads: int,
-    *,
-    observer: Observer,
 ) -> PrefectFutureList:
     """Submit mapped QC tasks for all samples."""
     n = len(samples)
@@ -289,20 +219,17 @@ def submit_qc_tasks(
             sample=samples,
             outdir=[outdir] * n,
             threads=[min(per_task_threads, 2 if s.paired else 1) for s in samples],
-            observer=[observer] * n,
         )
     elif tool == "fastp":
         return run_fastp.map(
             sample=samples,
             outdir=[outdir] * n,
             threads=[per_task_threads] * n,
-            observer=[observer] * n,
         )
     elif tool == "falco":
         return run_falco.map(
             sample=samples,
             outdir=[outdir] * n,
-            observer=[observer] * n,
         )
     else:
         raise SystemExit(f"Unknown QC tool: {qc_tool}")

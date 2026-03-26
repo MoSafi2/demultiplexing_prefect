@@ -8,9 +8,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from prefect.artifacts import create_link_artifact, create_markdown_artifact
-import fcntl  # type: ignore
 
+import fcntl  # type: ignore
+from prefect.artifacts import create_table_artifact
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -48,6 +53,10 @@ def summary_path(outdir: Path, run_name: str) -> Path:
     return tracking_dir(outdir, run_name) / "run_summary.json"
 
 
+# ---------------------------------------------------------------------------
+# Run context
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True, slots=True)
 class RunContext:
     run_name: str
@@ -65,6 +74,10 @@ class RunContext:
         return d
 
 
+# ---------------------------------------------------------------------------
+# Observer — lifecycle and event logging only
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True, slots=True)
 class Observer:
     run_name: str
@@ -78,9 +91,7 @@ class Observer:
         self.event({"type": "phase_started", "phase": phase, "run_name": self.run_name})
 
     def phase_finished(self, phase: str) -> None:
-        self.event(
-            {"type": "phase_finished", "phase": phase, "run_name": self.run_name}
-        )
+        self.event({"type": "phase_finished", "phase": phase, "run_name": self.run_name})
 
     def pipeline_started(self, context: RunContext) -> None:
         self.event({"type": "pipeline_started", "context": context.as_dict()})
@@ -119,16 +130,48 @@ class Observer:
             context=context,
         )
 
-    def publish_prefect_artifacts(
-        self, *, extra_paths: Iterable[Path] | None = None
-    ) -> None:
-        publish_prefect_observability_artifacts(
-            run_name=self.run_name,
-            summary_file=self.summary_file,
-            events_file=self.events_file,
-            extra_paths=extra_paths,
+
+# ---------------------------------------------------------------------------
+# Module-level observer — set once by the flow, read by infrastructure code
+# ---------------------------------------------------------------------------
+
+_current_observer: Observer | None = None
+
+
+def set_observer(obs: Observer) -> None:
+    global _current_observer
+    _current_observer = obs
+
+
+def get_observer() -> Observer | None:
+    return _current_observer
+
+
+def record_asset(
+    path: Path | str,
+    *,
+    step: str,
+    tool: str,
+    kind: str,
+    sample: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Emit an asset_created event via the current observer if one is set."""
+    obs = get_observer()
+    if obs:
+        obs.asset_created(
+            path=path,
+            step=step,
+            tool=tool,
+            kind=kind,
+            sample=sample,
+            metadata=metadata,
         )
 
+
+# ---------------------------------------------------------------------------
+# Event log
+# ---------------------------------------------------------------------------
 
 def append_event(path: Path, event: dict[str, Any]) -> None:
     path = Path(path)
@@ -140,19 +183,17 @@ def append_event(path: Path, event: dict[str, Any]) -> None:
 
     line = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     with path.open("a", encoding="utf-8") as f:
-        if fcntl is not None:
-            try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            except Exception:
-                pass
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            pass
         f.write(line + "\n")
         f.flush()
         os.fsync(f.fileno())
-        if fcntl is not None:
-            try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
 
 
 def read_events(path: Path) -> list[dict[str, Any]]:
@@ -167,20 +208,13 @@ def read_events(path: Path) -> list[dict[str, Any]]:
         try:
             out.append(json.loads(line))
         except Exception:
-            # tolerate partial/corrupt lines (e.g. abrupt termination)
             continue
     return out
 
 
-def _group_by(
-    items: Iterable[dict[str, Any]], key: str
-) -> dict[str, list[dict[str, Any]]]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for it in items:
-        k = str(it.get(key, ""))
-        grouped.setdefault(k, []).append(it)
-    return grouped
-
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
 
 def finalize_run_summary(
     *, events_file: Path, summary_file: Path, context: RunContext
@@ -199,8 +233,12 @@ def finalize_run_summary(
             continue
         asset_index[p] = a
 
+    by_step: dict[str, list[dict[str, Any]]] = {}
+    for cmd in commands:
+        by_step.setdefault(str(cmd.get("step", "")), []).append(cmd)
+
     durations_by_step: dict[str, dict[str, Any]] = {}
-    for step, items in _group_by(commands, "step").items():
+    for step, items in by_step.items():
         durs = [
             int(i.get("duration_ms", 0) or 0)
             for i in items
@@ -235,85 +273,47 @@ def finalize_run_summary(
     return summary
 
 
-def publish_prefect_observability_artifacts(
-    *,
-    run_name: str,
-    summary_file: Path,
-    events_file: Path,
-    extra_paths: Iterable[Path] | None = None,
-) -> None:
-    """
-    Best-effort bridge to Prefect dashboard artifacts.
+# ---------------------------------------------------------------------------
+# Prefect artifact — single table at end of run
+# ---------------------------------------------------------------------------
 
-    This function intentionally never raises to avoid changing pipeline outcomes.
-    """
-    if create_markdown_artifact is None or create_link_artifact is None:
-        return
-
-    summary_file = Path(summary_file)
-    events_file = Path(events_file)
-
-    summary_data: dict[str, Any] = {}
+def create_run_table(summary: dict[str, Any]) -> None:
+    """Publish one Prefect table artifact summarising the completed pipeline run."""
     try:
-        if summary_file.exists():
-            summary_data = json.loads(summary_file.read_text(encoding="utf-8"))
-    except Exception:
-        summary_data = {}
+        durations = summary.get("durations_by_step", {})
+        counts = summary.get("counts", {})
+        ctx = summary.get("context", {})
+        run_name = ctx.get("run_name", "")
 
-    counts = summary_data.get("counts", {}) if isinstance(summary_data, dict) else {}
-    context = summary_data.get("context", {}) if isinstance(summary_data, dict) else {}
-    md_lines = [
-        f"## Pipeline run: {run_name}",
-        "",
-        "### Counts",
-        f"- events: {counts.get('events', 0)}",
-        f"- assets: {counts.get('assets', 0)}",
-        f"- commands: {counts.get('commands', 0)}",
-        f"- phases: {counts.get('phases', 0)}",
-        f"- failures: {counts.get('failures', 0)}",
-    ]
-    if context:
-        md_lines.extend(
-            [
-                "",
-                "### Context",
-                f"- mode: {context.get('mode', '')}",
-                f"- qc_tool: {context.get('qc_tool', '')}",
-                f"- contamination_tool: {context.get('contamination_tool', '')}",
-                f"- thread_budget: {context.get('thread_budget', '')}",
-            ]
-        )
-    markdown_payload = "\n".join(md_lines)
+        rows: list[dict[str, Any]] = []
+        for phase in ("demux", "qc", "contamination", "multiqc"):
+            d = durations.get(phase)
+            if d is None:
+                continue
+            rows.append({
+                "phase": phase,
+                "commands": d["count"],
+                "total_s": round(d["total_ms"] / 1000, 1),
+                "max_s": round(d["max_ms"] / 1000, 1),
+            })
 
-    try:
-        create_markdown_artifact(
-            markdown=markdown_payload,
-            description=f"Pipeline observability summary for {run_name}",
+        total_ms = sum(d["total_ms"] for d in durations.values())
+        rows.append({
+            "phase": "total",
+            "commands": counts.get("commands", 0),
+            "total_s": round(total_ms / 1000, 1),
+            "max_s": "—",
+        })
+
+        failures = counts.get("failures", 0)
+        assets = counts.get("assets", 0)
+        create_table_artifact(
+            table=rows,
+            key="pipeline-summary",
+            description=(
+                f"run={run_name}  mode={ctx.get('mode','')}  "
+                f"qc={ctx.get('qc_tool','')}  assets={assets}  failures={failures}"
+            ),
         )
     except Exception:
         pass
-
-    link_targets: list[tuple[str, Path]] = [
-        ("events.jsonl", events_file),
-        ("run_summary.json", summary_file),
-    ]
-    for p in extra_paths or []:
-        pp = Path(p)
-        link_targets.append((pp.name, pp))
-
-    seen: set[str] = set()
-    for link_text, path in link_targets:
-        if not path.exists():
-            continue
-        resolved = str(path.resolve())
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        try:
-            create_link_artifact(
-                link=path.resolve().as_uri(),
-                link_text=link_text,
-                description=f"Pipeline output for {run_name}",
-            )
-        except Exception:
-            pass

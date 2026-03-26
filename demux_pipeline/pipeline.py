@@ -13,8 +13,10 @@ from demux import BCL_CONVERT_OUTDIR_NAME, demux_bcl, _samples_from_fastq_dir
 from observability import (
     Observer,
     RunContext,
+    create_run_table,
     default_run_name,
     events_path as _events_path,
+    set_observer,
     slugify_run_name,
     summary_path as _summary_path,
     utc_now_iso,
@@ -133,6 +135,7 @@ def demux_pipeline(
     observer = Observer(
         run_name=resolved, events_file=events_file, summary_file=summary_file
     )
+    set_observer(observer)
     observer.pipeline_started(ctx)
     logger = get_run_logger()
     logger.info("run_name=%s tracking=%s", resolved, events_file.parent)
@@ -144,7 +147,6 @@ def demux_pipeline(
             bcl_dir=bcl_dir,
             samplesheet=samplesheet,
             outdir=outdir_path,
-            observer=observer,
         )
         observer.phase_finished("demux")
         samples = _discover_samples(demux_dir=outdir_path / BCL_CONVERT_OUTDIR_NAME)
@@ -170,7 +172,7 @@ def demux_pipeline(
     with ThreadPoolTaskRunner(max_workers=max_workers):
         observer.phase_started("qc")
         qc_futures = submit_qc_tasks(
-            samples, qc_tool, outdir_path, per_task_threads, observer=observer
+            samples, qc_tool, outdir_path, per_task_threads
         )
 
         contam_futures = None
@@ -181,7 +183,6 @@ def demux_pipeline(
                 contamination_tool,
                 outdir_path,
                 per_task_threads,
-                observer=observer,
                 kraken_db=kraken_db,
                 bracken_db=bracken_db,
                 fastq_screen_conf=fastq_screen_conf,
@@ -200,18 +201,9 @@ def demux_pipeline(
         outdir_path,
         [],
         include_contamination=bool(contamination_tool),
-        observer=observer,
     )
     observer.phase_finished("multiqc")
 
     observer.pipeline_finished()
-    observer.finalize_summary(context=ctx)
-    observer.asset_created(
-        path=events_file, step="tracking", tool="pipeline", kind="events_jsonl"
-    )
-    observer.asset_created(
-        path=summary_file, step="tracking", tool="pipeline", kind="run_summary_json"
-    )
-    observer.publish_prefect_artifacts(
-        extra_paths=[outdir_path / "multiqc" / "multiqc_report.html"]
-    )
+    summary = observer.finalize_summary(context=ctx)
+    create_run_table(summary)

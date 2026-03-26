@@ -7,10 +7,7 @@ import time
 from typing import Sequence
 
 from prefect import get_run_logger
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from observability import Observer
+from observability import get_observer
 
 
 def require_executable(exe: str) -> None:
@@ -28,25 +25,23 @@ def run_command(
     step: str | None = None,
     tool: str | None = None,
     sample: str | None = None,
-    observer: "Observer | None" = None,
 ) -> None:
     logger = get_run_logger()
+    obs = get_observer()
 
     cmd_str = " ".join(cmd)
     start = time.monotonic()
 
-    if observer is not None:
-        observer.event(
-            {
-                "type": "command_started",
-                "run_name": observer.run_name,
-                "step": step,
-                "tool": tool,
-                "sample": sample,
-                "cmd": list(cmd),
-                "cmd_str": cmd_str,
-            }
-        )
+    if obs:
+        obs.event({
+            "type": "command_started",
+            "run_name": obs.run_name,
+            "step": step,
+            "tool": tool,
+            "sample": sample,
+            "cmd": list(cmd),
+            "cmd_str": cmd_str,
+        })
 
     proc = subprocess.Popen(
         list(cmd),
@@ -72,31 +67,10 @@ def run_command(
         err_tail = stderr.splitlines()[-capture_err_tail:]
 
     if proc.returncode != 0:
-        if observer is not None:
-            observer.event(
-                {
-                    "type": "command_failed",
-                    "run_name": observer.run_name,
-                    "step": step,
-                    "tool": tool,
-                    "sample": sample,
-                    "cmd": list(cmd),
-                    "cmd_str": cmd_str,
-                    "returncode": proc.returncode,
-                    "duration_ms": duration_ms,
-                    "stderr_tail": err_tail,
-                }
-            )
-        msg = f"Command failed: {' '.join(cmd)}"
-        if err_tail:
-            msg = f"{msg}\n{'\n'.join(err_tail)}"
-        raise RuntimeError(msg)
-
-    if observer is not None:
-        observer.event(
-            {
-                "type": "command_finished",
-                "run_name": observer.run_name,
+        if obs:
+            obs.event({
+                "type": "command_failed",
+                "run_name": obs.run_name,
                 "step": step,
                 "tool": tool,
                 "sample": sample,
@@ -105,5 +79,22 @@ def run_command(
                 "returncode": proc.returncode,
                 "duration_ms": duration_ms,
                 "stderr_tail": err_tail,
-            }
-        )
+            })
+        msg = f"Command failed: {' '.join(cmd)}"
+        if err_tail:
+            msg = f"{msg}\n{'\n'.join(err_tail)}"
+        raise RuntimeError(msg)
+
+    if obs:
+        obs.event({
+            "type": "command_finished",
+            "run_name": obs.run_name,
+            "step": step,
+            "tool": tool,
+            "sample": sample,
+            "cmd": list(cmd),
+            "cmd_str": cmd_str,
+            "returncode": proc.returncode,
+            "duration_ms": duration_ms,
+            "stderr_tail": err_tail,
+        })

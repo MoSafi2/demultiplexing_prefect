@@ -57,9 +57,7 @@ def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
     ) as run_qc_phase, patch.object(
         pipeline_mod, "run_multiqc", MagicMock()
     ) as run_mq, patch.object(
-        pipeline_mod, "emit_prefect_asset_events_from_local_log", MagicMock()
-    ) as emit_assets, patch.object(
-        pipeline_mod, "publish_prefect_observability_artifacts", MagicMock()
+        pipeline_mod.Observer, "publish_prefect_artifacts", MagicMock()
     ) as publish_obs:
         pipeline_mod.qc_only_pipeline(
             qc_tool="falco",
@@ -71,9 +69,7 @@ def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
 
     run_qc_phase.assert_called_once()
     run_mq.assert_called_once()
-    emit_assets.assert_called_once()
     publish_obs.assert_called_once()
-    assert publish_obs.call_args.kwargs["run_name"] == "unit_test"
 
 
 def test_qc_only_pipeline_contamination_sequential(tmp_path: Path) -> None:
@@ -89,9 +85,7 @@ def test_qc_only_pipeline_contamination_sequential(tmp_path: Path) -> None:
     ) as run_contam_phase, patch.object(
         pipeline_mod, "run_multiqc", MagicMock()
     ) as run_mq, patch.object(
-        pipeline_mod, "emit_prefect_asset_events_from_local_log", MagicMock()
-    ) as emit_assets, patch.object(
-        pipeline_mod, "publish_prefect_observability_artifacts", MagicMock()
+        pipeline_mod.Observer, "publish_prefect_artifacts", MagicMock()
     ):
         pipeline_mod.qc_only_pipeline(
             qc_tool="falco",
@@ -105,13 +99,11 @@ def test_qc_only_pipeline_contamination_sequential(tmp_path: Path) -> None:
 
     run_qc_phase.assert_called_once()
     run_contam_phase.assert_called_once()
-    emit_assets.assert_called_once()
     run_mq.assert_called_once_with(
         outdir,
         [],
         include_contamination=True,
-        events_file=ANY,
-        run_name="unit_test",
+        observer=ANY,
     )
 
 
@@ -132,9 +124,7 @@ def test_qc_only_pipeline_contamination_parallel_submits_both(tmp_path: Path) ->
     ) as contam_submit, patch.object(
         pipeline_mod, "run_multiqc", MagicMock()
     ) as run_mq, patch.object(
-        pipeline_mod, "emit_prefect_asset_events_from_local_log", MagicMock()
-    ) as emit_assets, patch.object(
-        pipeline_mod, "publish_prefect_observability_artifacts", MagicMock()
+        pipeline_mod.Observer, "publish_prefect_artifacts", MagicMock()
     ):
         pipeline_mod.qc_only_pipeline(
             qc_tool="falco",
@@ -148,13 +138,11 @@ def test_qc_only_pipeline_contamination_parallel_submits_both(tmp_path: Path) ->
 
     qc_submit.assert_called_once()
     contam_submit.assert_called_once()
-    emit_assets.assert_called_once()
     run_mq.assert_called_once_with(
         outdir,
         [],
         include_contamination=True,
-        events_file=ANY,
-        run_name="unit_test",
+        observer=ANY,
     )
 
 

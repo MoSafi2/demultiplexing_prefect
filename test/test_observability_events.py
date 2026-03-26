@@ -98,58 +98,62 @@ def test_publish_prefect_observability_artifacts_best_effort(tmp_path: Path) -> 
     assert {"events.jsonl", "run_summary.json", "multiqc_report.html"} <= link_texts
 
 
-def test_emit_prefect_asset_events_from_local_log_dedupes_and_payload(tmp_path: Path) -> None:
-    obs = _load_repo_module("observability", "demux_pipeline/observability.py")
-
-    events = tmp_path / "events.jsonl"
-    p1 = tmp_path / "a" / "x.txt"
-    p2 = tmp_path / "b" / "y.txt"
-    p1.parent.mkdir(parents=True, exist_ok=True)
-    p2.parent.mkdir(parents=True, exist_ok=True)
-    p1.write_text("x", encoding="utf-8")
-    p2.write_text("y", encoding="utf-8")
-    events.write_text(
-        "\n".join(
-            [
-                json.dumps({"type": "asset_created", "path": str(p1), "kind": "report", "tool": "qc", "step": "qc"}),
-                json.dumps({"type": "asset_created", "path": str(p1), "kind": "report", "tool": "qc", "step": "qc"}),
-                json.dumps({"type": "asset_created", "path": str(p2), "kind": "output", "tool": "multiqc", "step": "multiqc"}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    event_calls: list[dict] = []
-
-    def _fake_emit_event(**kwargs):
-        event_calls.append(kwargs)
-        return None
-
-    setattr(obs, "emit_event", _fake_emit_event)
-    obs.emit_prefect_asset_events_from_local_log(events_file=events, run_name="unit_test")
-
-    assert len(event_calls) == 2
-    for call in event_calls:
-        assert call["event"] == "asset.created"
-        rid = call["resource"]["prefect.resource.id"]
-        assert rid.startswith("prefect.asset.pipeline.unit_test.")
-        assert call["resource"]["prefect.resource.role"] == "asset"
-        assert call["payload"]["run_name"] == "unit_test"
-
-
-def test_emit_prefect_asset_events_from_local_log_is_best_effort(tmp_path: Path) -> None:
+def test_observer_records_events_and_assets(tmp_path: Path) -> None:
     obs = _load_repo_module("observability", "demux_pipeline/observability.py")
     events = tmp_path / "events.jsonl"
-    p = tmp_path / "x.txt"
-    p.write_text("x", encoding="utf-8")
-    events.write_text(
-        json.dumps({"type": "asset_created", "path": str(p), "kind": "report"}) + "\n",
-        encoding="utf-8",
+    summary = tmp_path / "run_summary.json"
+    observer = obs.Observer(run_name="unit_test", events_file=events, summary_file=summary)
+    observer.event({"type": "phase_started", "phase": "qc", "run_name": "unit_test"})
+    observer.asset_created(
+        path=tmp_path / "sample.txt",
+        step="qc",
+        tool="falco",
+        kind="report",
+        sample="s1",
     )
+    loaded = obs.read_events(events)
+    assert len(loaded) == 2
+    assert loaded[0]["type"] == "phase_started"
+    assert loaded[1]["type"] == "asset_created"
+    assert loaded[1]["run_name"] == "unit_test"
+    assert loaded[1]["sample"] == "s1"
 
-    def _boom(**kwargs):
-        raise RuntimeError("boom")
 
-    setattr(obs, "emit_event", _boom)
-    obs.emit_prefect_asset_events_from_local_log(events_file=events, run_name="unit_test")
+def test_observer_finalize_and_publish_prefect_artifacts(tmp_path: Path) -> None:
+    obs = _load_repo_module("observability", "demux_pipeline/observability.py")
+    events = tmp_path / "events.jsonl"
+    summary = tmp_path / "run_summary.json"
+    report = tmp_path / "multiqc_report.html"
+    report.write_text("<html></html>", encoding="utf-8")
+    ctx = obs.RunContext(
+        run_name="unit_test",
+        outdir=str(tmp_path),
+        mode="qc",
+        qc_tool="falco",
+        contamination_tool=None,
+        thread_budget=1,
+        started_at=obs.utc_now_iso(),
+        inputs={},
+    )
+    observer = obs.Observer(run_name="unit_test", events_file=events, summary_file=summary)
+    observer.asset_created(path=tmp_path / "a.txt", step="qc", tool="falco", kind="report")
+    out = observer.finalize_summary(context=ctx)
+    assert out["counts"]["assets"] == 1
+
+    md_calls: list[dict] = []
+    link_calls: list[dict] = []
+
+    def _fake_md(**kwargs):
+        md_calls.append(kwargs)
+        return "id"
+
+    def _fake_link(**kwargs):
+        link_calls.append(kwargs)
+        return "id"
+
+    setattr(obs, "create_markdown_artifact", _fake_md)
+    setattr(obs, "create_link_artifact", _fake_link)
+    observer.publish_prefect_artifacts(extra_paths=[report])
+    assert len(md_calls) == 1
+    assert "Pipeline run: unit_test" in md_calls[0]["markdown"]
+    assert len(link_calls) == 3

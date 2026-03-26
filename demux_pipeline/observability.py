@@ -14,10 +14,6 @@ try:
 except Exception:  # pragma: no cover
     create_link_artifact = None  # type: ignore[assignment]
     create_markdown_artifact = None  # type: ignore[assignment]
-try:
-    from prefect.events import emit_event
-except Exception:  # pragma: no cover
-    emit_event = None  # type: ignore[assignment]
 
 try:
     import fcntl  # type: ignore
@@ -76,6 +72,67 @@ class RunContext:
         d = asdict(self)
         d["inputs"] = d["inputs"] or {}
         return d
+
+
+@dataclass(frozen=True, slots=True)
+class Observer:
+    run_name: str
+    events_file: Path
+    summary_file: Path
+
+    def event(self, payload: dict[str, Any]) -> None:
+        append_event(self.events_file, payload)
+
+    def phase_started(self, phase: str) -> None:
+        self.event({"type": "phase_started", "phase": phase, "run_name": self.run_name})
+
+    def phase_finished(self, phase: str) -> None:
+        self.event({"type": "phase_finished", "phase": phase, "run_name": self.run_name})
+
+    def pipeline_started(self, context: RunContext) -> None:
+        self.event({"type": "pipeline_started", "context": context.as_dict()})
+
+    def pipeline_finished(self) -> None:
+        self.event({"type": "pipeline_finished", "run_name": self.run_name})
+
+    def asset_created(
+        self,
+        *,
+        path: Path | str,
+        step: str,
+        tool: str,
+        kind: str,
+        sample: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "type": "asset_created",
+            "run_name": self.run_name,
+            "step": step,
+            "tool": tool,
+            "kind": kind,
+            "path": str(path),
+        }
+        if sample is not None:
+            payload["sample"] = sample
+        if metadata is not None:
+            payload["metadata"] = metadata
+        self.event(payload)
+
+    def finalize_summary(self, *, context: RunContext) -> dict[str, Any]:
+        return finalize_run_summary(
+            events_file=self.events_file,
+            summary_file=self.summary_file,
+            context=context,
+        )
+
+    def publish_prefect_artifacts(self, *, extra_paths: Iterable[Path] | None = None) -> None:
+        publish_prefect_observability_artifacts(
+            run_name=self.run_name,
+            summary_file=self.summary_file,
+            events_file=self.events_file,
+            extra_paths=extra_paths,
+        )
 
 
 def append_event(path: Path, event: dict[str, Any]) -> None:
@@ -250,67 +307,6 @@ def publish_prefect_observability_artifacts(
                 link=path.resolve().as_uri(),
                 link_text=link_text,
                 description=f"Pipeline output for {run_name}",
-            )
-        except Exception:
-            pass
-
-
-def _prefect_asset_resource_id(*, run_name: str, kind: str, path: Path) -> str:
-    run_slug = slugify_run_name(run_name) or "pipeline-run"
-    kind_slug = slugify_run_name(kind) or "asset"
-    name_slug = slugify_run_name(path.name) or "path"
-    return f"prefect.asset.pipeline.{run_slug}.{kind_slug}.{name_slug}"
-
-
-def emit_prefect_asset_events_from_local_log(
-    *,
-    events_file: Path,
-    run_name: str,
-) -> None:
-    """
-    Emit Prefect asset events using local `asset_created` log entries.
-
-    This function intentionally never raises to avoid changing pipeline outcomes.
-    """
-    if emit_event is None:
-        return
-
-    seen_paths: set[str] = set()
-    for ev in read_events(events_file):
-        if ev.get("type") != "asset_created":
-            continue
-        raw_path = ev.get("path")
-        if not raw_path:
-            continue
-        path = Path(str(raw_path))
-        resolved = str(path.resolve())
-        if resolved in seen_paths:
-            continue
-        seen_paths.add(resolved)
-
-        kind = str(ev.get("kind", "asset"))
-        resource_id = _prefect_asset_resource_id(run_name=run_name, kind=kind, path=path)
-        payload = {
-            "path": str(path),
-            "kind": kind,
-            "run_name": str(ev.get("run_name") or run_name),
-            "tool": ev.get("tool"),
-            "step": ev.get("step"),
-            "sample": ev.get("sample"),
-            "metadata": ev.get("metadata"),
-        }
-        try:
-            emit_event(
-                event="asset.created",
-                resource={
-                    "prefect.resource.id": resource_id,
-                    "prefect.resource.name": path.name,
-                    "prefect.resource.role": "asset",
-                    "pipeline.run_name": run_name,
-                    "pipeline.asset.kind": kind,
-                    "pipeline.asset.path": str(path),
-                },
-                payload=payload,
             )
         except Exception:
             pass

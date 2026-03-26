@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any, Callable, Tuple, cast
+from typing import Any  # used by run_multiqc signature (_qc_tasks: list[Any])
 
-from prefect import task, get_run_logger, flow
+from prefect import task, get_run_logger
 from prefect.futures import PrefectFutureList
-from prefect.task_runners import ThreadPoolTaskRunner
 
 # Lets MultiQC pick up Bracken `-w` reports (see multiqc_config.yaml).
 MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
@@ -16,30 +15,8 @@ from models import Sample
 from process import run_command
 from observability import Observer
 
-QCSubmitter = Callable[[list[Sample], Path, int], PrefectFutureList]
-
-
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-
-
-def _allocate_sample_parallelism(thread_budget: int, num_samples: int) -> Tuple[int, int]:
-    """
-    Allocate concurrent sample tasks (C) and threads per tool invocation (T) so that
-    C * T <= thread_budget.
-
-    This controls:
-    - **max_workers**: how many samples run concurrently
-    - **per_task_threads**: how many threads each tool invocation should use
-    """
-    if thread_budget < 1:
-        raise SystemExit("thread budget must be at least 1")
-    if num_samples < 1:
-        raise SystemExit("no samples provided")
-
-    max_workers = min(num_samples, max(1, thread_budget))
-    per_task_threads = max(1, thread_budget // max_workers)
-    return max_workers, per_task_threads
 
 
 @task
@@ -296,60 +273,6 @@ def run_falco(
         )
 
 
-def _submit_fastqc(
-    samples: list[Sample],
-    outdir: Path,
-    per_task_threads: int,
-    *,
-    observer: Observer,
-) -> PrefectFutureList:
-    n = len(samples)
-    return run_fastqc.map(
-        sample=samples,
-        outdir=[outdir] * n,
-        threads=[min(per_task_threads, 2 if s.paired else 1) for s in samples],
-        observer=[observer] * n,
-    )
-
-
-def _submit_fastp(
-    samples: list[Sample],
-    outdir: Path,
-    per_task_threads: int,
-    *,
-    observer: Observer,
-) -> PrefectFutureList:
-    n = len(samples)
-    return run_fastp.map(
-        sample=samples,
-        outdir=[outdir] * n,
-        threads=[per_task_threads] * n,
-        observer=[observer] * n,
-    )
-
-
-def _submit_falco(
-    samples: list[Sample],
-    outdir: Path,
-    _per_task_threads: int,
-    *,
-    observer: Observer,
-) -> PrefectFutureList:
-    n = len(samples)
-    return run_falco.map(
-        sample=samples,
-        outdir=[outdir] * n,
-        observer=[observer] * n,
-    )
-
-
-QC_TOOL_REGISTRY: dict[str, Any] = {
-    "fastqc": _submit_fastqc,
-    "fastp": _submit_fastp,
-    "falco": _submit_falco,
-}
-
-
 def submit_qc_tasks(
     samples: list[Sample],
     qc_tool: str,
@@ -359,66 +282,29 @@ def submit_qc_tasks(
     observer: Observer,
 ) -> PrefectFutureList:
     """Submit mapped QC tasks for all samples."""
-    qc_tool_norm = qc_tool.lower().strip()
-    submitter = QC_TOOL_REGISTRY.get(qc_tool_norm)
-    if submitter is None:
+    n = len(samples)
+    tool = qc_tool.lower().strip()
+    if tool == "fastqc":
+        return run_fastqc.map(
+            sample=samples,
+            outdir=[outdir] * n,
+            threads=[min(per_task_threads, 2 if s.paired else 1) for s in samples],
+            observer=[observer] * n,
+        )
+    elif tool == "fastp":
+        return run_fastp.map(
+            sample=samples,
+            outdir=[outdir] * n,
+            threads=[per_task_threads] * n,
+            observer=[observer] * n,
+        )
+    elif tool == "falco":
+        return run_falco.map(
+            sample=samples,
+            outdir=[outdir] * n,
+            observer=[observer] * n,
+        )
+    else:
         raise SystemExit(f"Unknown QC tool: {qc_tool}")
-    return submitter(
-        samples,
-        outdir,
-        per_task_threads,
-        observer=observer,
-    )
 
 
-@flow(name="qc_submit", log_prints=True)
-def _qc_submit_flow(
-    samples: list[Sample],
-    qc_tool: str,
-    outdir: Path,
-    per_task_threads: int,
-    *,
-    observer: Observer,
-) -> PrefectFutureList:
-    return submit_qc_tasks(
-        samples,
-        qc_tool,
-        outdir,
-        per_task_threads,
-        observer=observer,
-    )
-
-
-@flow(name="qc_phase", log_prints=True)
-def qc_phase(
-    samples: list[Sample],
-    qc_tool: str,
-    outdir: Path,
-    thread_budget: int,
-    *,
-    observer: Observer,
-) -> PrefectFutureList:
-    """
-    Run QC in parallel under a thread budget.
-
-    Returns a `PrefectFutureList` of the mapped QC tasks so callers can await
-    completion by calling `.result()` on the returned object.
-    """
-    logger = get_run_logger()
-    max_workers, per_task_threads = _allocate_sample_parallelism(
-        thread_budget, len(samples)
-    )
-    logger.info(
-        "QC phase: max concurrent samples=%s, per-sample tool threads=%s (budget=%s)",
-        max_workers,
-        per_task_threads,
-        thread_budget,
-    )
-    runner = ThreadPoolTaskRunner(max_workers=max_workers)
-    return _qc_submit_flow.with_options(task_runner=cast(Any, runner))(
-        samples=samples,
-        qc_tool=qc_tool,
-        outdir=outdir,
-        per_task_threads=per_task_threads,
-        observer=observer,
-    )

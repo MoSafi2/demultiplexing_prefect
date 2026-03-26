@@ -2,38 +2,16 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Callable, Literal, Tuple, cast
+from typing import Literal
 
-from prefect import flow, get_run_logger, task  # type: ignore[import-not-found]
+from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from prefect.futures import PrefectFutureList
-from prefect.task_runners import ThreadPoolTaskRunner
 from models import Sample
 from process import require_executable, run_command
 from observability import Observer
 
-ContamSubmitter = Callable[
-    [list[Sample], Path, int, Path | None, Path | None, Path | None, int],
-    PrefectFutureList,
-]
-
-
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-
-
-def _allocate_sample_parallelism(thread_budget: int, num_samples: int) -> Tuple[int, int]:
-    """
-    Allocate concurrent sample tasks (C) and threads per tool invocation (T) so that
-    C * T <= thread_budget.
-    """
-    if thread_budget < 1:
-        raise SystemExit("thread budget must be at least 1")
-    if num_samples < 1:
-        raise SystemExit("no samples provided")
-
-    max_workers = min(num_samples, max(1, thread_budget))
-    per_task_threads = max(1, thread_budget // max_workers)
-    return max_workers, per_task_threads
 
 
 def _bowtie2_index_exists(index_prefix: Path) -> bool:
@@ -101,25 +79,6 @@ def run_kraken2(
         outdir=outdir,
         threads=threads,
         kraken_db=kraken_db,
-        observer=observer,
-    )
-
-
-@task(tags=["contamination"])
-def run_bracken(
-    kraken_result: dict,
-    outdir: Path,
-    bracken_db: Path,
-    read_length: int,
-    observer: Observer,
-    level: str = "S",  # species level
-) -> dict:
-    return _run_bracken_impl(
-        kraken_result=kraken_result,
-        outdir=outdir,
-        bracken_db=bracken_db,
-        read_length=read_length,
-        level=level,
         observer=observer,
     )
 
@@ -358,8 +317,7 @@ def run_fastq_screen(
     missing = [p for p in reports if not p.exists()]
     if missing:
         raise RuntimeError(
-            "Missing FastQ Screen output(s): "
-            + ", ".join(str(p) for p in missing)
+            "Missing FastQ Screen output(s): " + ", ".join(str(p) for p in missing)
         )
 
     observer.asset_created(
@@ -401,86 +359,6 @@ def _resolve_kraken_bracken_dbs(
     )
 
 
-def _submit_kraken(
-    *,
-    samples: list[Sample],
-    outdir: Path,
-    per_task_threads: int,
-    kraken_db: Path | None,
-    bracken_db: Path | None,
-    fastq_screen_conf: Path | None,
-    read_length: int,
-    observer: Observer,
-) -> PrefectFutureList:
-    _ = bracken_db, fastq_screen_conf, read_length
-    if not kraken_db:
-        raise SystemExit("Kraken requires kraken_db")
-    n = len(samples)
-    return run_kraken2.map(
-        sample=samples,
-        outdir=[outdir] * n,
-        threads=[per_task_threads] * n,
-        kraken_db=[Path(kraken_db)] * n,
-        observer=[observer] * n,
-    )
-
-
-def _submit_kraken_bracken(
-    *,
-    samples: list[Sample],
-    outdir: Path,
-    per_task_threads: int,
-    kraken_db: Path | None,
-    bracken_db: Path | None,
-    fastq_screen_conf: Path | None,
-    read_length: int,
-    observer: Observer,
-) -> PrefectFutureList:
-    _ = fastq_screen_conf
-    kraken_path, bracken_path = _resolve_kraken_bracken_dbs(kraken_db, bracken_db)
-    n = len(samples)
-    return run_kraken_bracken.map(
-        sample=samples,
-        outdir=[outdir] * n,
-        threads=[per_task_threads] * n,
-        kraken_db=[kraken_path] * n,
-        bracken_db=[bracken_path] * n,
-        read_length=[read_length] * n,
-        observer=[observer] * n,
-    )
-
-
-def _submit_fastq_screen(
-    *,
-    samples: list[Sample],
-    outdir: Path,
-    per_task_threads: int,
-    kraken_db: Path | None,
-    bracken_db: Path | None,
-    fastq_screen_conf: Path | None,
-    read_length: int,
-    observer: Observer,
-) -> PrefectFutureList:
-    _ = kraken_db, bracken_db, read_length
-    if not fastq_screen_conf:
-        raise SystemExit("fastq_screen requires config file")
-    n = len(samples)
-    return run_fastq_screen.map(
-        sample=samples,
-        outdir=[outdir] * n,
-        threads=[per_task_threads] * n,
-        fastq_screen_conf=[Path(fastq_screen_conf)] * n,
-        observer=[observer] * n,
-    )
-
-
-CONTAM_TOOL_REGISTRY: dict[str, Any] = {
-    "kraken": _submit_kraken,
-    "kraken_bracken": _submit_kraken_bracken,
-    "fastq_screen": _submit_fastq_screen,
-}
-
-
 def submit_contamination_tasks(
     samples: list[Sample],
     contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
@@ -494,86 +372,40 @@ def submit_contamination_tasks(
     read_length: int = 150,
 ) -> PrefectFutureList:
     """Submit mapped contamination tasks for all samples."""
+    n = len(samples)
     tool = contamination_tool.lower().strip()
-    submitter = CONTAM_TOOL_REGISTRY.get(tool)
-    if submitter is None:
+    if tool == "kraken":
+        if not kraken_db:
+            raise SystemExit("kraken requires --kraken-db")
+        return run_kraken2.map(
+            sample=samples,
+            outdir=[outdir] * n,
+            threads=[per_task_threads] * n,
+            kraken_db=[Path(kraken_db)] * n,
+            observer=[observer] * n,
+        )
+    elif tool == "kraken_bracken":
+        kraken_path, bracken_path = _resolve_kraken_bracken_dbs(kraken_db, bracken_db)
+        return run_kraken_bracken.map(
+            sample=samples,
+            outdir=[outdir] * n,
+            threads=[per_task_threads] * n,
+            kraken_db=[kraken_path] * n,
+            bracken_db=[bracken_path] * n,
+            read_length=[read_length] * n,
+            observer=[observer] * n,
+        )
+    elif tool == "fastq_screen":
+        if not fastq_screen_conf:
+            raise SystemExit("fastq_screen requires --fastq-screen-conf")
+        return run_fastq_screen.map(
+            sample=samples,
+            outdir=[outdir] * n,
+            threads=[per_task_threads] * n,
+            fastq_screen_conf=[Path(fastq_screen_conf)] * n,
+            observer=[observer] * n,
+        )
+    else:
         raise SystemExit(f"Unknown contamination tool: {contamination_tool}")
-    return submitter(
-        samples=samples,
-        outdir=outdir,
-        per_task_threads=per_task_threads,
-        kraken_db=kraken_db,
-        bracken_db=bracken_db,
-        fastq_screen_conf=fastq_screen_conf,
-        read_length=read_length,
-        observer=observer,
-    )
 
 
-@flow(name="contamination_submit", log_prints=True)
-def _contamination_submit_flow(
-    samples: list[Sample],
-    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
-    outdir: Path,
-    per_task_threads: int,
-    *,
-    observer: Observer,
-    kraken_db: Path | None = None,
-    bracken_db: Path | None = None,
-    fastq_screen_conf: Path | None = None,
-    read_length: int = 150,
-) -> PrefectFutureList:
-    return submit_contamination_tasks(
-        samples=samples,
-        contamination_tool=contamination_tool,
-        outdir=outdir,
-        per_task_threads=per_task_threads,
-        observer=observer,
-        kraken_db=kraken_db,
-        bracken_db=bracken_db,
-        fastq_screen_conf=fastq_screen_conf,
-        read_length=read_length,
-    )
-
-
-@flow(name="contamination_phase", log_prints=True)
-def contamination_phase(
-    samples: list[Sample],
-    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
-    outdir: Path,
-    thread_budget: int,
-    *,
-    observer: Observer,
-    kraken_db: Path | None = None,
-    bracken_db: Path | None = None,
-    fastq_screen_conf: Path | None = None,
-    read_length: int = 150,
-) -> PrefectFutureList:
-    """
-    Run contamination analysis in parallel under a thread budget.
-
-    Returns a `PrefectFutureList` of mapped tasks so callers can await
-    completion by calling `.result()` on the returned object.
-    """
-    logger = get_run_logger()
-    max_workers, per_task_threads = _allocate_sample_parallelism(
-        thread_budget, len(samples)
-    )
-    logger.info(
-        "Contamination phase: max concurrent samples=%s, per-sample tool threads=%s (budget=%s)",
-        max_workers,
-        per_task_threads,
-        thread_budget,
-    )
-    runner = ThreadPoolTaskRunner(max_workers=max_workers)
-    return _contamination_submit_flow.with_options(task_runner=cast(Any, runner))(
-        samples=samples,
-        contamination_tool=contamination_tool,
-        outdir=outdir,
-        per_task_threads=per_task_threads,
-        observer=observer,
-        kraken_db=kraken_db,
-        bracken_db=bracken_db,
-        fastq_screen_conf=fastq_screen_conf,
-        read_length=read_length,
-    )

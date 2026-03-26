@@ -1,4 +1,4 @@
-"""Smoke checks for `qc_only_pipeline` (mocked CLIs for speed)."""
+"""Smoke checks for `demux_pipeline` (mocked CLIs for speed)."""
 
 from __future__ import annotations
 
@@ -26,9 +26,7 @@ def _load_repo_module(name: str, relative_path: str):
 
 def _import_pipeline():
     """Load `pipeline.py` without going through `import demux` package shadowing."""
-    if "pipeline" in sys.modules and hasattr(
-        sys.modules["pipeline"], "qc_only_pipeline"
-    ):
+    if "pipeline" in sys.modules and hasattr(sys.modules["pipeline"], "demux_pipeline"):
         return sys.modules["pipeline"]
     _load_repo_module("models", "demux_pipeline/models.py")
     _load_repo_module("process", "demux_pipeline/process.py")
@@ -44,6 +42,12 @@ def _tiny_gz(path: Path) -> None:
         f.write(b"@r/1\nACGT\n+\nIIII\n")
 
 
+class _Futures:
+    """Minimal stand-in for PrefectFutureList returned by .map()."""
+    def result(self) -> None:
+        return None
+
+
 def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
     pipeline_mod = _import_pipeline()
     fq = tmp_path / "sample_S1_L001_R1_001.fastq.gz"
@@ -53,13 +57,13 @@ def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
     outdir = tmp_path / "out"
 
     with patch.object(
-        pipeline_mod, "qc_phase", MagicMock()
-    ) as run_qc_phase, patch.object(
+        pipeline_mod, "submit_qc_tasks", return_value=_Futures()
+    ) as mock_qc, patch.object(
         pipeline_mod, "run_multiqc", MagicMock()
-    ) as run_mq, patch.object(
+    ) as mock_mq, patch.object(
         pipeline_mod.Observer, "publish_prefect_artifacts", MagicMock()
-    ) as publish_obs:
-        pipeline_mod.qc_only_pipeline(
+    ):
+        pipeline_mod.demux_pipeline(
             qc_tool="falco",
             thread_budget=1,
             outdir=outdir,
@@ -67,12 +71,11 @@ def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
             manifest_tsv=manifest,
         )
 
-    run_qc_phase.assert_called_once()
-    run_mq.assert_called_once()
-    publish_obs.assert_called_once()
+    mock_qc.assert_called_once()
+    mock_mq.assert_called_once()
 
 
-def test_qc_only_pipeline_contamination_sequential(tmp_path: Path) -> None:
+def test_pipeline_with_contamination(tmp_path: Path) -> None:
     pipeline_mod = _import_pipeline()
     fq = tmp_path / "sample_S1_L001_R1_001.fastq.gz"
     _tiny_gz(fq)
@@ -80,53 +83,16 @@ def test_qc_only_pipeline_contamination_sequential(tmp_path: Path) -> None:
     manifest.write_text(f"sample\t{fq}\n", encoding="utf-8")
     outdir = tmp_path / "out"
 
-    with patch.object(pipeline_mod, "qc_phase", MagicMock()) as run_qc_phase, patch.object(
-        pipeline_mod, "contamination_phase", MagicMock()
-    ) as run_contam_phase, patch.object(
+    with patch.object(
+        pipeline_mod, "submit_qc_tasks", return_value=_Futures()
+    ) as mock_qc, patch.object(
+        pipeline_mod, "submit_contamination_tasks", return_value=_Futures()
+    ) as mock_contam, patch.object(
         pipeline_mod, "run_multiqc", MagicMock()
-    ) as run_mq, patch.object(
+    ) as mock_mq, patch.object(
         pipeline_mod.Observer, "publish_prefect_artifacts", MagicMock()
     ):
-        pipeline_mod.qc_only_pipeline(
-            qc_tool="falco",
-            thread_budget=1,
-            outdir=outdir,
-            run_name="unit_test",
-            manifest_tsv=manifest,
-            contamination_tool="kraken",
-            kraken_db=tmp_path / "db",
-        )
-
-    run_qc_phase.assert_called_once()
-    run_contam_phase.assert_called_once()
-    run_mq.assert_called_once_with(
-        outdir,
-        [],
-        include_contamination=True,
-        observer=ANY,
-    )
-
-
-def test_qc_only_pipeline_contamination_parallel_submits_both(tmp_path: Path) -> None:
-    pipeline_mod = _import_pipeline()
-    fq = tmp_path / "sample_S1_L001_R1_001.fastq.gz"
-    _tiny_gz(fq)
-    manifest = tmp_path / "manifest.tsv"
-    manifest.write_text(f"sample\t{fq}\n", encoding="utf-8")
-    outdir = tmp_path / "out"
-
-    class _Future:
-        def result(self) -> None:
-            return None
-
-    with patch.object(pipeline_mod._run_qc_phase, "submit", return_value=_Future()) as qc_submit, patch.object(
-        pipeline_mod._run_contamination_phase, "submit", return_value=_Future()
-    ) as contam_submit, patch.object(
-        pipeline_mod, "run_multiqc", MagicMock()
-    ) as run_mq, patch.object(
-        pipeline_mod.Observer, "publish_prefect_artifacts", MagicMock()
-    ):
-        pipeline_mod.qc_only_pipeline(
+        pipeline_mod.demux_pipeline(
             qc_tool="falco",
             thread_budget=4,
             outdir=outdir,
@@ -136,9 +102,9 @@ def test_qc_only_pipeline_contamination_parallel_submits_both(tmp_path: Path) ->
             kraken_db=tmp_path / "db",
         )
 
-    qc_submit.assert_called_once()
-    contam_submit.assert_called_once()
-    run_mq.assert_called_once_with(
+    mock_qc.assert_called_once()
+    mock_contam.assert_called_once()
+    mock_mq.assert_called_once_with(
         outdir,
         [],
         include_contamination=True,
@@ -146,7 +112,44 @@ def test_qc_only_pipeline_contamination_parallel_submits_both(tmp_path: Path) ->
     )
 
 
-def test_flows_define_flow_run_name_template() -> None:
+def test_pipeline_skips_contamination_when_not_requested(tmp_path: Path) -> None:
     pipeline_mod = _import_pipeline()
-    assert getattr(pipeline_mod._qc_only_pipeline_flow, "flow_run_name", None) == "{run_name}"
-    assert getattr(pipeline_mod._demux_qc_pipeline_flow, "flow_run_name", None) == "{run_name}"
+    fq = tmp_path / "sample_S1_L001_R1_001.fastq.gz"
+    _tiny_gz(fq)
+    manifest = tmp_path / "manifest.tsv"
+    manifest.write_text(f"sample\t{fq}\n", encoding="utf-8")
+    outdir = tmp_path / "out"
+
+    with patch.object(
+        pipeline_mod, "submit_qc_tasks", return_value=_Futures()
+    ) as mock_qc, patch.object(
+        pipeline_mod, "submit_contamination_tasks", MagicMock()
+    ) as mock_contam, patch.object(
+        pipeline_mod, "run_multiqc", MagicMock()
+    ) as mock_mq, patch.object(
+        pipeline_mod.Observer, "publish_prefect_artifacts", MagicMock()
+    ):
+        pipeline_mod.demux_pipeline(
+            qc_tool="falco",
+            thread_budget=2,
+            outdir=outdir,
+            run_name="unit_test",
+            manifest_tsv=manifest,
+        )
+
+    mock_qc.assert_called_once()
+    mock_contam.assert_not_called()
+    mock_mq.assert_called_once_with(
+        outdir,
+        [],
+        include_contamination=False,
+        observer=ANY,
+    )
+
+
+def test_pipeline_is_a_prefect_flow() -> None:
+    pipeline_mod = _import_pipeline()
+    flow_fn = pipeline_mod.demux_pipeline
+    # Prefect @flow wraps the function; it exposes `.name` on the flow object
+    assert hasattr(flow_fn, "name")
+    assert flow_fn.name == "demux-pipeline"

@@ -8,17 +8,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-
-try:
-    from prefect.artifacts import create_link_artifact, create_markdown_artifact
-except Exception:  # pragma: no cover
-    create_link_artifact = None  # type: ignore[assignment]
-    create_markdown_artifact = None  # type: ignore[assignment]
-
-try:
-    import fcntl  # type: ignore
-except Exception:  # pragma: no cover
-    fcntl = None  # type: ignore
+from prefect.artifacts import create_link_artifact, create_markdown_artifact
+import fcntl  # type: ignore
 
 
 def utc_now_iso() -> str:
@@ -87,7 +78,9 @@ class Observer:
         self.event({"type": "phase_started", "phase": phase, "run_name": self.run_name})
 
     def phase_finished(self, phase: str) -> None:
-        self.event({"type": "phase_finished", "phase": phase, "run_name": self.run_name})
+        self.event(
+            {"type": "phase_finished", "phase": phase, "run_name": self.run_name}
+        )
 
     def pipeline_started(self, context: RunContext) -> None:
         self.event({"type": "pipeline_started", "context": context.as_dict()})
@@ -126,7 +119,9 @@ class Observer:
             context=context,
         )
 
-    def publish_prefect_artifacts(self, *, extra_paths: Iterable[Path] | None = None) -> None:
+    def publish_prefect_artifacts(
+        self, *, extra_paths: Iterable[Path] | None = None
+    ) -> None:
         publish_prefect_observability_artifacts(
             run_name=self.run_name,
             summary_file=self.summary_file,
@@ -177,7 +172,9 @@ def read_events(path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _group_by(items: Iterable[dict[str, Any]], key: str) -> dict[str, list[dict[str, Any]]]:
+def _group_by(
+    items: Iterable[dict[str, Any]], key: str
+) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for it in items:
         k = str(it.get(key, ""))
@@ -185,10 +182,14 @@ def _group_by(items: Iterable[dict[str, Any]], key: str) -> dict[str, list[dict[
     return grouped
 
 
-def finalize_run_summary(*, events_file: Path, summary_file: Path, context: RunContext) -> dict[str, Any]:
+def finalize_run_summary(
+    *, events_file: Path, summary_file: Path, context: RunContext
+) -> dict[str, Any]:
     evs = read_events(events_file)
     assets = [e for e in evs if e.get("type") == "asset_created"]
-    commands = [e for e in evs if e.get("type") in ("command_finished", "command_failed")]
+    commands = [
+        e for e in evs if e.get("type") in ("command_finished", "command_failed")
+    ]
     phases = [e for e in evs if e.get("type") in ("phase_started", "phase_finished")]
 
     asset_index: dict[str, dict[str, Any]] = {}
@@ -200,7 +201,11 @@ def finalize_run_summary(*, events_file: Path, summary_file: Path, context: RunC
 
     durations_by_step: dict[str, dict[str, Any]] = {}
     for step, items in _group_by(commands, "step").items():
-        durs = [int(i.get("duration_ms", 0) or 0) for i in items if i.get("duration_ms") is not None]
+        durs = [
+            int(i.get("duration_ms", 0) or 0)
+            for i in items
+            if i.get("duration_ms") is not None
+        ]
         if not durs:
             continue
         durations_by_step[step] = {
@@ -224,7 +229,9 @@ def finalize_run_summary(*, events_file: Path, summary_file: Path, context: RunC
 
     summary_file = Path(summary_file)
     summary_file.parent.mkdir(parents=True, exist_ok=True)
-    summary_file.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary_file.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return summary
 
 

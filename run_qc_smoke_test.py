@@ -40,10 +40,10 @@ def main(argv: list[str] | None = None) -> None:
         # Pipeline modules use "flat" imports like `from models import Sample`.
         sys.path.insert(0, str(DEMUX_PIPELINE_DIR))
 
-    from demux_pipeline.pipeline import qc_only_pipeline  # noqa: E402
+    from demux_pipeline.pipeline import demux_pipeline  # noqa: E402
 
     parser = argparse.ArgumentParser(
-        description="Run qc_only_pipeline on synthetic FASTQ.gz files (smoke test).",
+        description="Run demux_pipeline (QC-only mode) on synthetic FASTQ.gz files (smoke test).",
     )
     parser.add_argument(
         "--outdir",
@@ -92,9 +92,9 @@ def main(argv: list[str] | None = None) -> None:
 
         outdir = run_dir / "out"
         print(
-            f"Smoke: qc_only_pipeline qc_tool={qc_tool!r} outdir={outdir}", flush=True
+            f"Smoke: demux_pipeline qc_tool={qc_tool!r} outdir={outdir}", flush=True
         )
-        qc_only_pipeline(
+        demux_pipeline(
             qc_tool=qc_tool,
             thread_budget=args.threads,
             outdir=outdir,

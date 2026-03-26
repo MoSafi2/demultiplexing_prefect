@@ -14,7 +14,7 @@ DEMUX_PIPELINE_DIR = Path(__file__).resolve().parent / "demux_pipeline"
 if str(DEMUX_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(DEMUX_PIPELINE_DIR))
 
-from demux_pipeline.pipeline import demux_qc_pipeline, qc_only_pipeline  # noqa: E402
+from demux_pipeline.pipeline import demux_pipeline  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -195,37 +195,22 @@ def main(argv: list[str]) -> None:
     parser = _build_parser()
     args = _validate_args(parser)
 
-    # Note: the Prefect pipeline takes the parsed values verbatim.
-    if args.mode == "demux":
-        demux_qc_pipeline(
-            bcl_dir=args.bcl_dir,
-            samplesheet=args.samplesheet,
-            qc_tool=args.qc_tool,
-            thread_budget=args.threads,
-            outdir=args.outdir,
-            run_name=args.run_name,
-            contamination_tool=(
-                None if args.contamination_tool == "none" else args.contamination_tool
-            ),
-            kraken_db=args.kraken_db,
-            bracken_db=args.bracken_db,
-            fastq_screen_conf=args.fastq_screen_conf,
-        )
-    elif args.mode == "qc":
-        qc_only_pipeline(
-            qc_tool=args.qc_tool,
-            thread_budget=args.threads,
-            outdir=args.outdir,
-            run_name=args.run_name,
-            manifest_tsv=args.manifest_tsv,
-            in_fastq_dir=args.in_fastq_dir,
-            contamination_tool=(
-                None if args.contamination_tool == "none" else args.contamination_tool
-            ),
-            kraken_db=args.kraken_db,
-            bracken_db=args.bracken_db,
-            fastq_screen_conf=args.fastq_screen_conf,
-        )
+    demux_pipeline(
+        bcl_dir=args.bcl_dir if args.mode == "demux" else None,
+        samplesheet=args.samplesheet if args.mode == "demux" else None,
+        manifest_tsv=args.manifest_tsv if args.mode == "qc" else None,
+        in_fastq_dir=args.in_fastq_dir if args.mode == "qc" else None,
+        qc_tool=args.qc_tool,
+        thread_budget=args.threads,
+        outdir=args.outdir,
+        run_name=args.run_name,
+        contamination_tool=(
+            None if args.contamination_tool == "none" else args.contamination_tool
+        ),
+        kraken_db=args.kraken_db,
+        bracken_db=args.bracken_db,
+        fastq_screen_conf=args.fastq_screen_conf,
+    )
 
 
 if __name__ == "__main__":

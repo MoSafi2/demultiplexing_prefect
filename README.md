@@ -160,52 +160,6 @@ pixi run python cli.py \
 
 This directory is scanned recursively and FASTQs are grouped into samples based on an Illumina-ish filename pattern (expects `*_R1*` plus an optional matching `*_R2*`). Incomplete chunks are skipped, and paths containing `undetermined` are skipped by default.
 
-## Reference data shipped in this repo (for quick testing)
-
-### Kraken2 + Bracken (small)
-
-Use the pre-built DB under:
-
-* `data/kraken2_db/`
-
-The contamination code looks up Bracken k-mer distributions for `read_length=150` (this value is currently fixed by the CLI), and this bundled DB includes `database150mers.kmer_distrib`.
-
-Example:
-
-```bash
-pixi run python cli.py \
-  --mode qc \
-  --qc-tool fastqc \
-  --outdir ./qc_out \
-  --threads 4 \
-  --in-fastq-dir /path/to/fastqs \
-  --contamination-tool kraken_bracken \
-  --kraken-db ./data/kraken2_db
-```
-
-### FastQ Screen minimal
-
-The repo includes a minimal PhiX setup:
-
-* `data/fastq_screen/fastq_screen_minimal.conf`
-* `data/fastq_screen/phix174.fa`
-* `data/fastq_screen/phix_bowtie2/`
-
-You can pass the config directly:
-
-```bash
-pixi run python cli.py \
-  --mode qc \
-  --qc-tool fastqc \
-  --outdir ./qc_out \
-  --threads 4 \
-  --in-fastq-dir /path/to/fastqs \
-  --contamination-tool fastq_screen \
-  --fastq-screen-conf ./data/fastq_screen/fastq_screen_minimal.conf
-```
-
-Relative `DATABASE` entries inside the config are rewritten to absolute paths at runtime by the pipeline.
-
 ## Smoke test
 
 `run_qc_smoke_test.py` generates tiny synthetic FASTQ.gz files and runs the QC-only flow using real binaries.

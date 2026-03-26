@@ -30,6 +30,7 @@ def _import_pipeline():
     ):
         return sys.modules["pipeline"]
     _load_repo_module("models", "demux_pipeline/models.py")
+    _load_repo_module("process", "demux_pipeline/process.py")
     _load_repo_module("demux", "demux_pipeline/demux.py")
     _load_repo_module("qc", "demux_pipeline/qc.py")
     _load_repo_module("contamination", "demux_pipeline/contamination.py")
@@ -51,8 +52,8 @@ def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
     outdir = tmp_path / "out"
 
     with patch.object(
-        pipeline_mod, "_run_qc_phase", MagicMock()
-    ) as run_qc_mapped, patch.object(
+        pipeline_mod, "qc_phase", MagicMock()
+    ) as run_qc_phase, patch.object(
         pipeline_mod, "run_multiqc", MagicMock()
     ) as run_mq:
         pipeline_mod.qc_only_pipeline(
@@ -62,5 +63,63 @@ def test_qc_only_pipeline_smoke_mocked(tmp_path: Path) -> None:
             manifest_tsv=manifest,
         )
 
-    run_qc_mapped.assert_called_once()
+    run_qc_phase.assert_called_once()
     run_mq.assert_called_once()
+
+
+def test_qc_only_pipeline_contamination_sequential(tmp_path: Path) -> None:
+    pipeline_mod = _import_pipeline()
+    fq = tmp_path / "sample_S1_L001_R1_001.fastq.gz"
+    _tiny_gz(fq)
+    manifest = tmp_path / "manifest.tsv"
+    manifest.write_text(f"sample\t{fq}\n", encoding="utf-8")
+    outdir = tmp_path / "out"
+
+    with patch.object(pipeline_mod, "qc_phase", MagicMock()) as run_qc_phase, patch.object(
+        pipeline_mod, "contamination_phase", MagicMock()
+    ) as run_contam_phase, patch.object(
+        pipeline_mod, "run_multiqc", MagicMock()
+    ) as run_mq:
+        pipeline_mod.qc_only_pipeline(
+            qc_tool="falco",
+            thread_budget=1,
+            outdir=outdir,
+            manifest_tsv=manifest,
+            contamination_tool="kraken",
+            kraken_db=tmp_path / "db",
+        )
+
+    run_qc_phase.assert_called_once()
+    run_contam_phase.assert_called_once()
+    run_mq.assert_called_once_with(outdir, [], include_contamination=True)
+
+
+def test_qc_only_pipeline_contamination_parallel_submits_both(tmp_path: Path) -> None:
+    pipeline_mod = _import_pipeline()
+    fq = tmp_path / "sample_S1_L001_R1_001.fastq.gz"
+    _tiny_gz(fq)
+    manifest = tmp_path / "manifest.tsv"
+    manifest.write_text(f"sample\t{fq}\n", encoding="utf-8")
+    outdir = tmp_path / "out"
+
+    class _Future:
+        def result(self) -> None:
+            return None
+
+    with patch.object(pipeline_mod._run_qc_phase, "submit", return_value=_Future()) as qc_submit, patch.object(
+        pipeline_mod._run_contamination_phase, "submit", return_value=_Future()
+    ) as contam_submit, patch.object(
+        pipeline_mod, "run_multiqc", MagicMock()
+    ) as run_mq:
+        pipeline_mod.qc_only_pipeline(
+            qc_tool="falco",
+            thread_budget=4,
+            outdir=outdir,
+            manifest_tsv=manifest,
+            contamination_tool="kraken",
+            kraken_db=tmp_path / "db",
+        )
+
+    qc_submit.assert_called_once()
+    contam_submit.assert_called_once()
+    run_mq.assert_called_once_with(outdir, [], include_contamination=True)

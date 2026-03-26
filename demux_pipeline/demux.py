@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from models import Sample
+from process import run_command
 
 
 # Parent `--outdir` contains this subdirectory with all bcl-convert artifacts (FASTQs, Reports, etc.).
@@ -92,32 +92,6 @@ def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
             f.write(f"{sample.name}\t{sample.r1}\t{sample.r2}\n")
 
 
-def _run(cmd: list[str]) -> None:
-    logger = get_run_logger()
-
-    completed = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if completed.stdout:
-        for line in completed.stdout.splitlines():
-            logger.info(line.rstrip())
-    if completed.stderr:
-        for line in completed.stderr.splitlines():
-            logger.info(line.rstrip())
-
-    if completed.returncode != 0:
-        detail = (completed.stderr or "").strip()
-        if not detail:
-            detail = (completed.stdout or "").strip() or "(no output)"
-        raise RuntimeError(
-            f"Command failed (exit {completed.returncode}): {' '.join(cmd)}\n{detail}"
-        )
-
-
 def _resolve_bcl_convert_binary() -> str:
     """Prefer ./bcl-convert (cwd), then copy next to this module, then PATH."""
     project_root = Path(__file__).resolve().parent
@@ -180,7 +154,7 @@ def demux_bcl(
     if extra_args:
         cmd.extend(extra_args)
     logger.info("bcl-convert: %s", " ".join(cmd))
-    _run(cmd)
+    run_command(cmd, capture_err_tail=80)
 
 
 @task(name="write_fastq_manifest")

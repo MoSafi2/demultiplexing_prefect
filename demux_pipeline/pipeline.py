@@ -61,6 +61,67 @@ def _run_contamination_phase(
     )
 
 
+def _run_qc_and_optional_contamination(
+    *,
+    samples: List[Sample],
+    qc_tool: str,
+    outdir: Path,
+    thread_budget: int,
+    contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"] | None,
+    kraken_db: Path | None = None,
+    bracken_db: Path | None = None,
+    fastq_screen_conf: Path | None = None,
+    read_length: int = 150,
+) -> None:
+    logger = get_run_logger()
+    if not contamination_tool:
+        qc_phase(samples, qc_tool, outdir, thread_budget)
+        return
+
+    if thread_budget == 1:
+        logger.info(
+            "thread_budget=1 with contamination enabled; running QC and contamination sequentially."
+        )
+        qc_phase(samples, qc_tool, outdir, thread_budget)
+        contamination_phase(
+            samples,
+            contamination_tool,
+            outdir,
+            thread_budget,
+            kraken_db=kraken_db,
+            bracken_db=bracken_db,
+            fastq_screen_conf=fastq_screen_conf,
+            read_length=read_length,
+        )
+        return
+
+    qc_budget, contamination_budget = _split_phase_budgets(thread_budget)
+    logger.info(
+        "Concurrent phases: qc_budget=%s, contamination_budget=%s (global_budget=%s)",
+        qc_budget,
+        contamination_budget,
+        thread_budget,
+    )
+    qc_future = _run_qc_phase.submit(
+        samples=samples,
+        qc_tool=qc_tool,
+        outdir=outdir,
+        thread_budget=qc_budget,
+    )
+    contamination_future = _run_contamination_phase.submit(
+        samples=samples,
+        contamination_tool=contamination_tool,
+        outdir=outdir,
+        thread_budget=contamination_budget,
+        kraken_db=kraken_db,
+        bracken_db=bracken_db,
+        fastq_screen_conf=fastq_screen_conf,
+        read_length=read_length,
+    )
+    qc_future.result()
+    contamination_future.result()
+
+
 # -------------------------
 # Sample loading tasks
 # -------------------------
@@ -132,57 +193,23 @@ def qc_only_pipeline(
     fastq_screen_conf: Path | None = None,
     read_length: int = 150,
 ) -> None:
-    logger = get_run_logger()
     outdir_path = Path(outdir)
     samples = _discover_samples(manifest_tsv=manifest_tsv, in_fastq_dir=in_fastq_dir)
 
     if not samples:
         raise SystemExit("No samples found to process.")
 
-    if contamination_tool:
-        if thread_budget == 1:
-            logger.info(
-                "thread_budget=1 with contamination enabled; running QC and contamination sequentially."
-            )
-            qc_phase(samples, qc_tool, outdir_path, thread_budget)
-            contamination_phase(
-                samples,
-                contamination_tool,
-                outdir_path,
-                thread_budget,
-                kraken_db=kraken_db,
-                bracken_db=bracken_db,
-                fastq_screen_conf=fastq_screen_conf,
-                read_length=read_length,
-            )
-        else:
-            qc_budget, contamination_budget = _split_phase_budgets(thread_budget)
-            logger.info(
-                "Concurrent phases: qc_budget=%s, contamination_budget=%s (global_budget=%s)",
-                qc_budget,
-                contamination_budget,
-                thread_budget,
-            )
-            qc_future = _run_qc_phase.submit(
-                samples=samples,
-                qc_tool=qc_tool,
-                outdir=outdir_path,
-                thread_budget=qc_budget,
-            )
-            contamination_future = _run_contamination_phase.submit(
-                samples=samples,
-                contamination_tool=contamination_tool,
-                outdir=outdir_path,
-                thread_budget=contamination_budget,
-                kraken_db=kraken_db,
-                bracken_db=bracken_db,
-                fastq_screen_conf=fastq_screen_conf,
-                read_length=read_length,
-            )
-            qc_future.result()
-            contamination_future.result()
-    else:
-        qc_phase(samples, qc_tool, outdir_path, thread_budget)
+    _run_qc_and_optional_contamination(
+        samples=samples,
+        qc_tool=qc_tool,
+        outdir=outdir_path,
+        thread_budget=thread_budget,
+        contamination_tool=contamination_tool,
+        kraken_db=kraken_db,
+        bracken_db=bracken_db,
+        fastq_screen_conf=fastq_screen_conf,
+        read_length=read_length,
+    )
     run_multiqc(outdir_path, [], include_contamination=bool(contamination_tool))
 
 
@@ -209,7 +236,6 @@ def demux_qc_pipeline(
     fastq_screen_conf: Path | None = None,
     read_length: int = 150,
 ) -> None:
-    logger = get_run_logger()
     outdir_path = Path(outdir)
 
     # Demultiplex first
@@ -219,48 +245,15 @@ def demux_qc_pipeline(
     if not samples:
         raise SystemExit("No samples found after demux.")
 
-    if contamination_tool:
-        if thread_budget == 1:
-            logger.info(
-                "thread_budget=1 with contamination enabled; running QC and contamination sequentially."
-            )
-            qc_phase(samples, qc_tool, outdir_path, thread_budget)
-            contamination_phase(
-                samples,
-                contamination_tool,
-                outdir_path,
-                thread_budget,
-                kraken_db=kraken_db,
-                bracken_db=bracken_db,
-                fastq_screen_conf=fastq_screen_conf,
-                read_length=read_length,
-            )
-        else:
-            qc_budget, contamination_budget = _split_phase_budgets(thread_budget)
-            logger.info(
-                "Concurrent phases: qc_budget=%s, contamination_budget=%s (global_budget=%s)",
-                qc_budget,
-                contamination_budget,
-                thread_budget,
-            )
-            qc_future = _run_qc_phase.submit(
-                samples=samples,
-                qc_tool=qc_tool,
-                outdir=outdir_path,
-                thread_budget=qc_budget,
-            )
-            contamination_future = _run_contamination_phase.submit(
-                samples=samples,
-                contamination_tool=contamination_tool,
-                outdir=outdir_path,
-                thread_budget=contamination_budget,
-                kraken_db=kraken_db,
-                bracken_db=bracken_db,
-                fastq_screen_conf=fastq_screen_conf,
-                read_length=read_length,
-            )
-            qc_future.result()
-            contamination_future.result()
-    else:
-        qc_phase(samples, qc_tool, outdir_path, thread_budget)
+    _run_qc_and_optional_contamination(
+        samples=samples,
+        qc_tool=qc_tool,
+        outdir=outdir_path,
+        thread_budget=thread_budget,
+        contamination_tool=contamination_tool,
+        kraken_db=kraken_db,
+        bracken_db=bracken_db,
+        fastq_screen_conf=fastq_screen_conf,
+        read_length=read_length,
+    )
     run_multiqc(outdir_path, [], include_contamination=bool(contamination_tool))

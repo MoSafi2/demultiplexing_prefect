@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import subprocess
 import shutil
 from pathlib import Path
-from typing import Any, Tuple, cast
+from typing import Any, Callable, Tuple, cast
 
 from prefect import task, get_run_logger, flow
 from prefect.futures import PrefectFutureList
@@ -14,6 +13,9 @@ MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
 
 from demux import BCL_CONVERT_OUTDIR_NAME
 from models import Sample
+from process import run_command
+
+QCSubmitter = Callable[[list[Sample], Path, int], PrefectFutureList]
 
 
 def _ensure_dir(path: Path) -> None:
@@ -37,30 +39,6 @@ def _allocate_sample_parallelism(thread_budget: int, num_samples: int) -> Tuple[
     max_workers = min(num_samples, max(1, thread_budget))
     per_task_threads = max(1, thread_budget // max_workers)
     return max_workers, per_task_threads
-
-
-def _run(cmd: list[str]) -> None:
-    logger = get_run_logger()
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
-
-    for line in proc.stdout or []:
-        logger.info(line.rstrip())
-
-    for line in proc.stderr or []:
-        # Many QC CLIs (fastqc, fastp, multiqc, falco) write normal progress to stderr.
-        logger.info(line.rstrip())
-
-    proc.wait()
-
-    if proc.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}")
 
 
 @task
@@ -111,7 +89,7 @@ def run_multiqc(
         cmd.extend(["-c", str(MULTIQC_PROJECT_CONFIG)])
     cmd.extend(["-o", str(multiqc_out), *inputs])
     logger.info("multiqc: %s", " ".join(cmd))
-    _run(cmd)
+    run_command(cmd)
 
 
 @task(tags=["qc"])
@@ -132,7 +110,7 @@ def run_fastqc(sample: Sample, outdir: Path, threads: int) -> None:
         ]
 
         logger.info("fastqc: %s", " ".join(cmd))
-        _run(cmd)
+        run_command(cmd)
 
 
 @task(tags=["qc"])
@@ -196,7 +174,7 @@ def run_fastp(sample: Sample, outdir: Path, threads: int) -> Path:
         ]
 
     logger.info("fastp (QC-only): %s", " ".join(cmd))
-    _run(cmd)
+    run_command(cmd)
 
     return out_r1
 
@@ -220,7 +198,36 @@ def run_falco(sample: Sample, outdir: Path) -> None:
         ]
 
         logger.info("falco: %s", " ".join(cmd))
-        _run(cmd)
+        run_command(cmd)
+
+
+def _submit_fastqc(samples: list[Sample], outdir: Path, per_task_threads: int) -> PrefectFutureList:
+    n = len(samples)
+    return run_fastqc.map(
+        sample=samples,
+        outdir=[outdir] * n,
+        threads=[min(per_task_threads, 2 if s.paired else 1) for s in samples],
+    )
+
+
+def _submit_fastp(samples: list[Sample], outdir: Path, per_task_threads: int) -> PrefectFutureList:
+    n = len(samples)
+    return run_fastp.map(
+        sample=samples,
+        outdir=[outdir] * n,
+        threads=[per_task_threads] * n,
+    )
+
+
+def _submit_falco(samples: list[Sample], outdir: Path, _per_task_threads: int) -> PrefectFutureList:
+    return run_falco.map(sample=samples, outdir=[outdir] * len(samples))
+
+
+QC_TOOL_REGISTRY: dict[str, QCSubmitter] = {
+    "fastqc": _submit_fastqc,
+    "fastp": _submit_fastp,
+    "falco": _submit_falco,
+}
 
 
 def submit_qc_tasks(
@@ -228,24 +235,17 @@ def submit_qc_tasks(
 ) -> PrefectFutureList:
     """Submit mapped QC tasks for all samples."""
     qc_tool_norm = qc_tool.lower().strip()
-    n = len(samples)
-    outdirs = [outdir] * n
-    dispatch = {
-        "fastqc": lambda: run_fastqc.map(
-            sample=samples,
-            outdir=outdirs,
-            threads=[min(per_task_threads, 2 if s.paired else 1) for s in samples],
-        ),
-        "fastp": lambda: run_fastp.map(
-            sample=samples,
-            outdir=outdirs,
-            threads=[per_task_threads] * n,
-        ),
-        "falco": lambda: run_falco.map(sample=samples, outdir=outdirs),
-    }
-    if qc_tool_norm not in dispatch:
+    submitter = QC_TOOL_REGISTRY.get(qc_tool_norm)
+    if submitter is None:
         raise SystemExit(f"Unknown QC tool: {qc_tool}")
-    return dispatch[qc_tool_norm]()
+    return submitter(samples, outdir, per_task_threads)
+
+
+@flow(name="qc_submit", log_prints=True)
+def _qc_submit_flow(
+    samples: list[Sample], qc_tool: str, outdir: Path, per_task_threads: int
+) -> PrefectFutureList:
+    return submit_qc_tasks(samples, qc_tool, outdir, per_task_threads)
 
 
 @flow(name="qc_phase", log_prints=True)
@@ -272,9 +272,9 @@ def qc_phase(
         thread_budget,
     )
     runner = ThreadPoolTaskRunner(max_workers=max_workers)
-
-    @flow(log_prints=True)
-    def _qc_submit() -> PrefectFutureList:
-        return submit_qc_tasks(samples, qc_tool, outdir, per_task_threads)
-
-    return _qc_submit.with_options(task_runner=cast(Any, runner))()
+    return _qc_submit_flow.with_options(task_runner=cast(Any, runner))(
+        samples=samples,
+        qc_tool=qc_tool,
+        outdir=outdir,
+        per_task_threads=per_task_threads,
+    )

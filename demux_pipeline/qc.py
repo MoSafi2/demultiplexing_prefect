@@ -14,6 +14,7 @@ MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
 from demux import BCL_CONVERT_OUTDIR_NAME
 from models import Sample
 from process import run_command
+from observability import append_event
 
 QCSubmitter = Callable[[list[Sample], Path, int], PrefectFutureList]
 
@@ -47,6 +48,8 @@ def run_multiqc(
     _qc_tasks: list[Any],
     *,
     include_contamination: bool = False,
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> None:
     """
     Collect QC results into a single MultiQC report.
@@ -89,11 +92,51 @@ def run_multiqc(
         cmd.extend(["-c", str(MULTIQC_PROJECT_CONFIG)])
     cmd.extend(["-o", str(multiqc_out), *inputs])
     logger.info("multiqc: %s", " ".join(cmd))
-    run_command(cmd)
+    run_command(
+        cmd,
+        events_file=events_file,
+        run_name=run_name,
+        step="multiqc",
+        tool="multiqc",
+        capture_err_tail=80,
+    )
+
+    if events_file:
+        ev_path = Path(events_file)
+        append_event(
+            ev_path,
+            {
+                "type": "asset_created",
+                "run_name": run_name,
+                "step": "multiqc",
+                "tool": "multiqc",
+                "kind": "directory",
+                "path": str(multiqc_out),
+            },
+        )
+        report = multiqc_out / "multiqc_report.html"
+        if report.exists():
+            append_event(
+                ev_path,
+                {
+                    "type": "asset_created",
+                    "run_name": run_name,
+                    "step": "multiqc",
+                    "tool": "multiqc",
+                    "kind": "report_html",
+                    "path": str(report),
+                },
+            )
 
 
 @task(tags=["qc"])
-def run_fastqc(sample: Sample, outdir: Path, threads: int) -> None:
+def run_fastqc(
+    sample: Sample,
+    outdir: Path,
+    threads: int,
+    events_file: str | None = None,
+    run_name: str | None = None,
+) -> None:
     logger = get_run_logger()
     fastqc_dir = outdir / "fastqc"
     _ensure_dir(fastqc_dir)
@@ -110,11 +153,40 @@ def run_fastqc(sample: Sample, outdir: Path, threads: int) -> None:
         ]
 
         logger.info("fastqc: %s", " ".join(cmd))
-        run_command(cmd)
+        run_command(
+            cmd,
+            events_file=events_file,
+            run_name=run_name,
+            step="qc",
+            tool="fastqc",
+            sample=sample.name,
+            capture_err_tail=80,
+        )
+
+    if events_file:
+        ev_path = Path(events_file)
+        append_event(
+            ev_path,
+            {
+                "type": "asset_created",
+                "run_name": run_name,
+                "step": "qc",
+                "tool": "fastqc",
+                "kind": "directory",
+                "path": str(fastqc_dir),
+                "sample": sample.name,
+            },
+        )
 
 
 @task(tags=["qc"])
-def run_fastp(sample: Sample, outdir: Path, threads: int) -> Path:
+def run_fastp(
+    sample: Sample,
+    outdir: Path,
+    threads: int,
+    events_file: str | None = None,
+    run_name: str | None = None,
+) -> Path:
     logger = get_run_logger()
 
     fastp_dir = outdir / "fastp"
@@ -174,13 +246,59 @@ def run_fastp(sample: Sample, outdir: Path, threads: int) -> Path:
         ]
 
     logger.info("fastp (QC-only): %s", " ".join(cmd))
-    run_command(cmd)
+    run_command(
+        cmd,
+        events_file=events_file,
+        run_name=run_name,
+        step="qc",
+        tool="fastp",
+        sample=sample.name,
+        capture_err_tail=80,
+    )
+
+    if events_file:
+        ev_path = Path(events_file)
+        for p, kind in [
+            (html_path, "report_html"),
+            (json_path, "report_json"),
+            (out_r1, "fastq"),
+        ]:
+            append_event(
+                ev_path,
+                {
+                    "type": "asset_created",
+                    "run_name": run_name,
+                    "step": "qc",
+                    "tool": "fastp",
+                    "kind": kind,
+                    "path": str(p),
+                    "sample": sample.name,
+                },
+            )
+        if sample.paired:
+            append_event(
+                ev_path,
+                {
+                    "type": "asset_created",
+                    "run_name": run_name,
+                    "step": "qc",
+                    "tool": "fastp",
+                    "kind": "fastq",
+                    "path": str(out_r2),
+                    "sample": sample.name,
+                },
+            )
 
     return out_r1
 
 
 @task(tags=["qc"])
-def run_falco(sample: Sample, outdir: Path) -> None:
+def run_falco(
+    sample: Sample,
+    outdir: Path,
+    events_file: str | None = None,
+    run_name: str | None = None,
+) -> None:
     logger = get_run_logger()
 
     for read, path in [("R1", sample.r1), ("R2", sample.r2)]:
@@ -198,32 +316,86 @@ def run_falco(sample: Sample, outdir: Path) -> None:
         ]
 
         logger.info("falco: %s", " ".join(cmd))
-        run_command(cmd)
+        run_command(
+            cmd,
+            events_file=events_file,
+            run_name=run_name,
+            step="qc",
+            tool="falco",
+            sample=sample.name,
+            capture_err_tail=80,
+        )
+        if events_file:
+            ev_path = Path(events_file)
+            append_event(
+                ev_path,
+                {
+                    "type": "asset_created",
+                    "run_name": run_name,
+                    "step": "qc",
+                    "tool": "falco",
+                    "kind": "directory",
+                    "path": str(falco_dir),
+                    "sample": sample.name,
+                    "metadata": {"read": read},
+                },
+            )
 
 
-def _submit_fastqc(samples: list[Sample], outdir: Path, per_task_threads: int) -> PrefectFutureList:
+def _submit_fastqc(
+    samples: list[Sample],
+    outdir: Path,
+    per_task_threads: int,
+    *,
+    events_file: str | None,
+    run_name: str | None,
+) -> PrefectFutureList:
     n = len(samples)
     return run_fastqc.map(
         sample=samples,
         outdir=[outdir] * n,
         threads=[min(per_task_threads, 2 if s.paired else 1) for s in samples],
+        events_file=[events_file] * n,
+        run_name=[run_name] * n,
     )
 
 
-def _submit_fastp(samples: list[Sample], outdir: Path, per_task_threads: int) -> PrefectFutureList:
+def _submit_fastp(
+    samples: list[Sample],
+    outdir: Path,
+    per_task_threads: int,
+    *,
+    events_file: str | None,
+    run_name: str | None,
+) -> PrefectFutureList:
     n = len(samples)
     return run_fastp.map(
         sample=samples,
         outdir=[outdir] * n,
         threads=[per_task_threads] * n,
+        events_file=[events_file] * n,
+        run_name=[run_name] * n,
     )
 
 
-def _submit_falco(samples: list[Sample], outdir: Path, _per_task_threads: int) -> PrefectFutureList:
-    return run_falco.map(sample=samples, outdir=[outdir] * len(samples))
+def _submit_falco(
+    samples: list[Sample],
+    outdir: Path,
+    _per_task_threads: int,
+    *,
+    events_file: str | None,
+    run_name: str | None,
+) -> PrefectFutureList:
+    n = len(samples)
+    return run_falco.map(
+        sample=samples,
+        outdir=[outdir] * n,
+        events_file=[events_file] * n,
+        run_name=[run_name] * n,
+    )
 
 
-QC_TOOL_REGISTRY: dict[str, QCSubmitter] = {
+QC_TOOL_REGISTRY: dict[str, Any] = {
     "fastqc": _submit_fastqc,
     "fastp": _submit_fastp,
     "falco": _submit_falco,
@@ -231,21 +403,46 @@ QC_TOOL_REGISTRY: dict[str, QCSubmitter] = {
 
 
 def submit_qc_tasks(
-    samples: list[Sample], qc_tool: str, outdir: Path, per_task_threads: int
+    samples: list[Sample],
+    qc_tool: str,
+    outdir: Path,
+    per_task_threads: int,
+    *,
+    events_file: str | None,
+    run_name: str | None,
 ) -> PrefectFutureList:
     """Submit mapped QC tasks for all samples."""
     qc_tool_norm = qc_tool.lower().strip()
     submitter = QC_TOOL_REGISTRY.get(qc_tool_norm)
     if submitter is None:
         raise SystemExit(f"Unknown QC tool: {qc_tool}")
-    return submitter(samples, outdir, per_task_threads)
+    return submitter(
+        samples,
+        outdir,
+        per_task_threads,
+        events_file=events_file,
+        run_name=run_name,
+    )
 
 
 @flow(name="qc_submit", log_prints=True)
 def _qc_submit_flow(
-    samples: list[Sample], qc_tool: str, outdir: Path, per_task_threads: int
+    samples: list[Sample],
+    qc_tool: str,
+    outdir: Path,
+    per_task_threads: int,
+    *,
+    events_file: str | None,
+    run_name: str | None,
 ) -> PrefectFutureList:
-    return submit_qc_tasks(samples, qc_tool, outdir, per_task_threads)
+    return submit_qc_tasks(
+        samples,
+        qc_tool,
+        outdir,
+        per_task_threads,
+        events_file=events_file,
+        run_name=run_name,
+    )
 
 
 @flow(name="qc_phase", log_prints=True)
@@ -254,6 +451,9 @@ def qc_phase(
     qc_tool: str,
     outdir: Path,
     thread_budget: int,
+    *,
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> PrefectFutureList:
     """
     Run QC in parallel under a thread budget.
@@ -277,4 +477,6 @@ def qc_phase(
         qc_tool=qc_tool,
         outdir=outdir,
         per_task_threads=per_task_threads,
+        events_file=events_file,
+        run_name=run_name,
     )

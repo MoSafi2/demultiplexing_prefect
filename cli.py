@@ -56,6 +56,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Root output directory.",
     )
 
+    parser.add_argument(
+        "--run-name",
+        required=False,
+        default=None,
+        help=(
+            "Optional user-friendly label for this pipeline run. "
+            "Used for Prefect flow run naming and pipeline tracking artifacts."
+        ),
+    )
+
     # demux inputs (required when --mode demux)
     parser.add_argument(
         "--bcl_dir",
@@ -193,6 +203,7 @@ def main(argv: list[str]) -> None:
             qc_tool=args.qc_tool,
             thread_budget=args.threads,
             outdir=args.outdir,
+            run_name=args.run_name,
             contamination_tool=(
                 None if args.contamination_tool == "none" else args.contamination_tool
             ),
@@ -205,6 +216,7 @@ def main(argv: list[str]) -> None:
             qc_tool=args.qc_tool,
             thread_budget=args.threads,
             outdir=args.outdir,
+            run_name=args.run_name,
             manifest_tsv=args.manifest_tsv,
             in_fastq_dir=args.in_fastq_dir,
             contamination_tool=(

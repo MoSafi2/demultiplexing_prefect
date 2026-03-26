@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import time
 from typing import Sequence
 
 from prefect import get_run_logger
@@ -16,8 +17,36 @@ def require_executable(exe: str) -> None:
         )
 
 
-def run_command(cmd: Sequence[str], *, capture_err_tail: int | None = None) -> None:
+def run_command(
+    cmd: Sequence[str],
+    *,
+    capture_err_tail: int | None = None,
+    events_file: str | None = None,
+    run_name: str | None = None,
+    step: str | None = None,
+    tool: str | None = None,
+    sample: str | None = None,
+) -> None:
     logger = get_run_logger()
+
+    cmd_str = " ".join(cmd)
+    start = time.monotonic()
+
+    if events_file:
+        from observability import append_event  # local import (flat-module layout)
+
+        append_event(
+            events_file,
+            {
+                "type": "command_started",
+                "run_name": run_name,
+                "step": step,
+                "tool": tool,
+                "sample": sample,
+                "cmd": list(cmd),
+                "cmd_str": cmd_str,
+            },
+        )
 
     proc = subprocess.Popen(
         list(cmd),
@@ -27,6 +56,7 @@ def run_command(cmd: Sequence[str], *, capture_err_tail: int | None = None) -> N
     )
 
     stdout, stderr = proc.communicate()
+    duration_ms = int((time.monotonic() - start) * 1000)
 
     # Print tool output "as-is" (preserve newlines/formatting) instead of
     # threading it through structured Prefect logs.
@@ -42,7 +72,44 @@ def run_command(cmd: Sequence[str], *, capture_err_tail: int | None = None) -> N
         err_tail = stderr.splitlines()[-capture_err_tail:]
 
     if proc.returncode != 0:
+        if events_file:
+            from observability import append_event  # local import (flat-module layout)
+
+            append_event(
+                events_file,
+                {
+                    "type": "command_failed",
+                    "run_name": run_name,
+                    "step": step,
+                    "tool": tool,
+                    "sample": sample,
+                    "cmd": list(cmd),
+                    "cmd_str": cmd_str,
+                    "returncode": proc.returncode,
+                    "duration_ms": duration_ms,
+                    "stderr_tail": err_tail,
+                },
+            )
         msg = f"Command failed: {' '.join(cmd)}"
         if err_tail:
             msg = f"{msg}\n{'\n'.join(err_tail)}"
         raise RuntimeError(msg)
+
+    if events_file:
+        from observability import append_event  # local import (flat-module layout)
+
+        append_event(
+            events_file,
+            {
+                "type": "command_finished",
+                "run_name": run_name,
+                "step": step,
+                "tool": tool,
+                "sample": sample,
+                "cmd": list(cmd),
+                "cmd_str": cmd_str,
+                "returncode": proc.returncode,
+                "duration_ms": duration_ms,
+                "stderr_tail": err_tail,
+            },
+        )

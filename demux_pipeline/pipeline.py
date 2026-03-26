@@ -9,6 +9,18 @@ from models import Sample
 from qc import qc_phase, run_multiqc
 from contamination import contamination_phase
 from demux import BCL_CONVERT_OUTDIR_NAME, demux_bcl, _samples_from_fastq_dir
+from observability import (
+    RunContext,
+    append_event,
+    default_run_name,
+    emit_prefect_asset_events_from_local_log,
+    events_path as _events_path,
+    finalize_run_summary,
+    publish_prefect_observability_artifacts,
+    slugify_run_name,
+    summary_path as _summary_path,
+    utc_now_iso,
+)
 
 
 def _split_phase_budgets(thread_budget: int) -> tuple[int, int]:
@@ -34,8 +46,17 @@ def _run_qc_phase(
     qc_tool: str,
     outdir: Path,
     thread_budget: int,
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> None:
-    qc_phase(samples, qc_tool, outdir, thread_budget)
+    qc_phase(
+        samples,
+        qc_tool,
+        outdir,
+        thread_budget,
+        events_file=events_file,
+        run_name=run_name,
+    )
 
 
 @task
@@ -44,6 +65,8 @@ def _run_contamination_phase(
     contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
     outdir: Path,
     thread_budget: int,
+    events_file: str | None = None,
+    run_name: str | None = None,
     kraken_db: Path | None = None,
     bracken_db: Path | None = None,
     fastq_screen_conf: Path | None = None,
@@ -54,6 +77,8 @@ def _run_contamination_phase(
         contamination_tool,
         outdir,
         thread_budget,
+        events_file=events_file,
+        run_name=run_name,
         kraken_db=kraken_db,
         bracken_db=bracken_db,
         fastq_screen_conf=fastq_screen_conf,
@@ -67,6 +92,8 @@ def _run_qc_and_optional_contamination(
     qc_tool: str,
     outdir: Path,
     thread_budget: int,
+    events_file: Path,
+    run_name: str,
     contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"] | None,
     kraken_db: Path | None = None,
     bracken_db: Path | None = None,
@@ -75,23 +102,63 @@ def _run_qc_and_optional_contamination(
 ) -> None:
     logger = get_run_logger()
     if not contamination_tool:
-        qc_phase(samples, qc_tool, outdir, thread_budget)
+        append_event(
+            events_file,
+            {"type": "phase_started", "phase": "qc", "run_name": run_name},
+        )
+        qc_phase(
+            samples,
+            qc_tool,
+            outdir,
+            thread_budget,
+            events_file=str(events_file),
+            run_name=run_name,
+        )
+        append_event(
+            events_file,
+            {"type": "phase_finished", "phase": "qc", "run_name": run_name},
+        )
         return
 
     if thread_budget == 1:
         logger.info(
             "thread_budget=1 with contamination enabled; running QC and contamination sequentially."
         )
-        qc_phase(samples, qc_tool, outdir, thread_budget)
+        append_event(
+            events_file,
+            {"type": "phase_started", "phase": "qc", "run_name": run_name},
+        )
+        qc_phase(
+            samples,
+            qc_tool,
+            outdir,
+            thread_budget,
+            events_file=str(events_file),
+            run_name=run_name,
+        )
+        append_event(
+            events_file,
+            {"type": "phase_finished", "phase": "qc", "run_name": run_name},
+        )
+        append_event(
+            events_file,
+            {"type": "phase_started", "phase": "contamination", "run_name": run_name},
+        )
         contamination_phase(
             samples,
             contamination_tool,
             outdir,
             thread_budget,
+            events_file=str(events_file),
+            run_name=run_name,
             kraken_db=kraken_db,
             bracken_db=bracken_db,
             fastq_screen_conf=fastq_screen_conf,
             read_length=read_length,
+        )
+        append_event(
+            events_file,
+            {"type": "phase_finished", "phase": "contamination", "run_name": run_name},
         )
         return
 
@@ -107,12 +174,16 @@ def _run_qc_and_optional_contamination(
         qc_tool=qc_tool,
         outdir=outdir,
         thread_budget=qc_budget,
+        events_file=str(events_file),
+        run_name=run_name,
     )
     contamination_future = _run_contamination_phase.submit(
         samples=samples,
         contamination_tool=contamination_tool,
         outdir=outdir,
         thread_budget=contamination_budget,
+        events_file=str(events_file),
+        run_name=run_name,
         kraken_db=kraken_db,
         bracken_db=bracken_db,
         fastq_screen_conf=fastq_screen_conf,
@@ -177,12 +248,13 @@ def _discover_samples(
         raise SystemExit("No input provided for sample discovery.")
 
 
-@flow(name="qc-only", log_prints=True)
-def qc_only_pipeline(
+@flow(name="qc-only", log_prints=True, flow_run_name="{run_name}")
+def _qc_only_pipeline_flow(
     *,
     qc_tool: str = "falco",
     thread_budget: int = 4,
     outdir: Path | str,
+    run_name: str | None = None,
     manifest_tsv: Path | None = None,
     in_fastq_dir: Path | None = None,
     contamination_tool: (
@@ -194,23 +266,98 @@ def qc_only_pipeline(
     read_length: int = 150,
 ) -> None:
     outdir_path = Path(outdir)
+    resolved = slugify_run_name(run_name or "") or default_run_name(
+        mode="qc", qc_tool=qc_tool
+    )
+    events_file = _events_path(outdir_path, resolved)
+    summary_file = _summary_path(outdir_path, resolved)
+    ctx = RunContext(
+        run_name=resolved,
+        outdir=str(outdir_path),
+        mode="qc",
+        qc_tool=qc_tool,
+        contamination_tool=contamination_tool,
+        thread_budget=thread_budget,
+        started_at=utc_now_iso(),
+        inputs={
+            "manifest_tsv": str(manifest_tsv) if manifest_tsv else None,
+            "in_fastq_dir": str(in_fastq_dir) if in_fastq_dir else None,
+        },
+    )
+    append_event(events_file, {"type": "pipeline_started", "context": ctx.as_dict()})
+
     samples = _discover_samples(manifest_tsv=manifest_tsv, in_fastq_dir=in_fastq_dir)
 
     if not samples:
         raise SystemExit("No samples found to process.")
+
+    logger = get_run_logger()
+    logger.info("run_name=%s tracking=%s", resolved, events_file.parent)
 
     _run_qc_and_optional_contamination(
         samples=samples,
         qc_tool=qc_tool,
         outdir=outdir_path,
         thread_budget=thread_budget,
+        events_file=events_file,
+        run_name=resolved,
         contamination_tool=contamination_tool,
         kraken_db=kraken_db,
         bracken_db=bracken_db,
         fastq_screen_conf=fastq_screen_conf,
         read_length=read_length,
     )
-    run_multiqc(outdir_path, [], include_contamination=bool(contamination_tool))
+
+    append_event(events_file, {"type": "phase_started", "phase": "multiqc", "run_name": resolved})
+    run_multiqc(
+        outdir_path,
+        [],
+        include_contamination=bool(contamination_tool),
+        events_file=str(events_file),
+        run_name=resolved,
+    )
+    append_event(events_file, {"type": "phase_finished", "phase": "multiqc", "run_name": resolved})
+    append_event(events_file, {"type": "pipeline_finished", "run_name": resolved})
+    finalize_run_summary(events_file=events_file, summary_file=summary_file, context=ctx)
+    append_event(
+        events_file,
+        {
+            "type": "asset_created",
+            "run_name": resolved,
+            "step": "tracking",
+            "tool": "pipeline",
+            "kind": "events_jsonl",
+            "path": str(events_file),
+        },
+    )
+    append_event(
+        events_file,
+        {
+            "type": "asset_created",
+            "run_name": resolved,
+            "step": "tracking",
+            "tool": "pipeline",
+            "kind": "run_summary_json",
+            "path": str(summary_file),
+        },
+    )
+    emit_prefect_asset_events_from_local_log(events_file=events_file, run_name=resolved)
+    publish_prefect_observability_artifacts(
+        run_name=resolved,
+        summary_file=summary_file,
+        events_file=events_file,
+        extra_paths=[outdir_path / "multiqc" / "multiqc_report.html"],
+    )
+
+
+def qc_only_pipeline(**kwargs):  # type: ignore[no-untyped-def]
+    qc_tool = kwargs.get("qc_tool", "falco")
+    raw_name = kwargs.get("run_name")
+    resolved = slugify_run_name(raw_name or "") or default_run_name(
+        mode="qc", qc_tool=qc_tool
+    )
+    kwargs["run_name"] = resolved
+    return _qc_only_pipeline_flow(**kwargs)
 
 
 # -------------------------
@@ -220,14 +367,15 @@ def qc_only_pipeline(
 # than `thread_budget`. The budget applies to QC and contamination parallel stages.
 
 
-@flow(name="demux-qc", log_prints=True)
-def demux_qc_pipeline(
+@flow(name="demux-qc", log_prints=True, flow_run_name="{run_name}")
+def _demux_qc_pipeline_flow(
     *,
     bcl_dir: Path,
     samplesheet: Path,
     qc_tool: str = "falco",
     thread_budget: int = 4,
     outdir: Path | str,
+    run_name: str | None = None,
     contamination_tool: (
         Literal["kraken", "kraken_bracken", "fastq_screen"] | None
     ) = None,
@@ -237,9 +385,38 @@ def demux_qc_pipeline(
     read_length: int = 150,
 ) -> None:
     outdir_path = Path(outdir)
+    resolved = slugify_run_name(run_name or "") or default_run_name(
+        mode="demux", qc_tool=qc_tool
+    )
+    events_file = _events_path(outdir_path, resolved)
+    summary_file = _summary_path(outdir_path, resolved)
+    ctx = RunContext(
+        run_name=resolved,
+        outdir=str(outdir_path),
+        mode="demux",
+        qc_tool=qc_tool,
+        contamination_tool=contamination_tool,
+        thread_budget=thread_budget,
+        started_at=utc_now_iso(),
+        inputs={
+            "bcl_dir": str(bcl_dir),
+            "samplesheet": str(samplesheet),
+        },
+    )
+    append_event(events_file, {"type": "pipeline_started", "context": ctx.as_dict()})
+    logger = get_run_logger()
+    logger.info("run_name=%s tracking=%s", resolved, events_file.parent)
 
     # Demultiplex first
-    demux_bcl(bcl_dir=bcl_dir, samplesheet=samplesheet, outdir=outdir_path)
+    append_event(events_file, {"type": "phase_started", "phase": "demux", "run_name": resolved})
+    demux_bcl(
+        bcl_dir=bcl_dir,
+        samplesheet=samplesheet,
+        outdir=outdir_path,
+        events_file=str(events_file),
+        run_name=resolved,
+    )
+    append_event(events_file, {"type": "phase_finished", "phase": "demux", "run_name": resolved})
     samples = _discover_samples(demux_dir=outdir_path / BCL_CONVERT_OUTDIR_NAME)
 
     if not samples:
@@ -250,10 +427,62 @@ def demux_qc_pipeline(
         qc_tool=qc_tool,
         outdir=outdir_path,
         thread_budget=thread_budget,
+        events_file=events_file,
+        run_name=resolved,
         contamination_tool=contamination_tool,
         kraken_db=kraken_db,
         bracken_db=bracken_db,
         fastq_screen_conf=fastq_screen_conf,
         read_length=read_length,
     )
-    run_multiqc(outdir_path, [], include_contamination=bool(contamination_tool))
+
+    append_event(events_file, {"type": "phase_started", "phase": "multiqc", "run_name": resolved})
+    run_multiqc(
+        outdir_path,
+        [],
+        include_contamination=bool(contamination_tool),
+        events_file=str(events_file),
+        run_name=resolved,
+    )
+    append_event(events_file, {"type": "phase_finished", "phase": "multiqc", "run_name": resolved})
+    append_event(events_file, {"type": "pipeline_finished", "run_name": resolved})
+    finalize_run_summary(events_file=events_file, summary_file=summary_file, context=ctx)
+    append_event(
+        events_file,
+        {
+            "type": "asset_created",
+            "run_name": resolved,
+            "step": "tracking",
+            "tool": "pipeline",
+            "kind": "events_jsonl",
+            "path": str(events_file),
+        },
+    )
+    append_event(
+        events_file,
+        {
+            "type": "asset_created",
+            "run_name": resolved,
+            "step": "tracking",
+            "tool": "pipeline",
+            "kind": "run_summary_json",
+            "path": str(summary_file),
+        },
+    )
+    emit_prefect_asset_events_from_local_log(events_file=events_file, run_name=resolved)
+    publish_prefect_observability_artifacts(
+        run_name=resolved,
+        summary_file=summary_file,
+        events_file=events_file,
+        extra_paths=[outdir_path / "multiqc" / "multiqc_report.html"],
+    )
+
+
+def demux_qc_pipeline(**kwargs):  # type: ignore[no-untyped-def]
+    qc_tool = kwargs.get("qc_tool", "falco")
+    raw_name = kwargs.get("run_name")
+    resolved = slugify_run_name(raw_name or "") or default_run_name(
+        mode="demux", qc_tool=qc_tool
+    )
+    kwargs["run_name"] = resolved
+    return _demux_qc_pipeline_flow(**kwargs)

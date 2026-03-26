@@ -9,6 +9,7 @@ from prefect.futures import PrefectFutureList
 from prefect.task_runners import ThreadPoolTaskRunner
 from models import Sample
 from process import require_executable, run_command
+from observability import append_event
 
 ContamSubmitter = Callable[
     [list[Sample], Path, int, Path | None, Path | None, Path | None, int],
@@ -93,8 +94,17 @@ def run_kraken2(
     outdir: Path,
     threads: int,
     kraken_db: Path,
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> dict:
-    return _run_kraken2_impl(sample=sample, outdir=outdir, threads=threads, kraken_db=kraken_db)
+    return _run_kraken2_impl(
+        sample=sample,
+        outdir=outdir,
+        threads=threads,
+        kraken_db=kraken_db,
+        events_file=events_file,
+        run_name=run_name,
+    )
 
 
 @task(tags=["contamination"])
@@ -104,6 +114,8 @@ def run_bracken(
     bracken_db: Path,
     read_length: int,
     level: str = "S",  # species level
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> dict:
     return _run_bracken_impl(
         kraken_result=kraken_result,
@@ -111,6 +123,8 @@ def run_bracken(
         bracken_db=bracken_db,
         read_length=read_length,
         level=level,
+        events_file=events_file,
+        run_name=run_name,
     )
 
 
@@ -122,6 +136,8 @@ def run_kraken_bracken(
     bracken_db: Path,
     threads: int,
     read_length: int,
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> dict:
     """Run Kraken2 then Bracken for a single sample."""
     kraken_res = _run_kraken2_impl(
@@ -129,12 +145,16 @@ def run_kraken_bracken(
         outdir=outdir,
         threads=threads,
         kraken_db=kraken_db,
+        events_file=events_file,
+        run_name=run_name,
     )
     bracken_res = _run_bracken_impl(
         kraken_result=kraken_res,
         outdir=outdir,
         bracken_db=bracken_db,
         read_length=read_length,
+        events_file=events_file,
+        run_name=run_name,
     )
 
     return {
@@ -145,7 +165,13 @@ def run_kraken_bracken(
 
 
 def _run_kraken2_impl(
-    *, sample: Sample, outdir: Path, threads: int, kraken_db: Path
+    *,
+    sample: Sample,
+    outdir: Path,
+    threads: int,
+    kraken_db: Path,
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> dict:
     logger = get_run_logger()
     require_executable("kraken2")
@@ -177,10 +203,33 @@ def _run_kraken2_impl(
         cmd.append(str(sample.r1))
 
     logger.info("kraken2: %s", " ".join(cmd))
-    run_command(cmd, capture_err_tail=80)
+    run_command(
+        cmd,
+        capture_err_tail=80,
+        events_file=events_file,
+        run_name=run_name,
+        step="contamination",
+        tool="kraken2",
+        sample=sample.name,
+    )
 
     if not report_path.exists():
         raise RuntimeError(f"Missing Kraken report: {report_path}")
+
+    if events_file:
+        for p, kind in [(report_path, "report"), (output_path, "output")]:
+            append_event(
+                events_file,
+                {
+                    "type": "asset_created",
+                    "run_name": run_name,
+                    "step": "contamination",
+                    "tool": "kraken2",
+                    "kind": kind,
+                    "path": str(p),
+                    "sample": sample.name,
+                },
+            )
 
     return {
         "sample": sample.name,
@@ -196,6 +245,8 @@ def _run_bracken_impl(
     bracken_db: Path,
     read_length: int,
     level: str = "S",
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> dict:
     logger = get_run_logger()
     require_executable("bracken")
@@ -242,7 +293,15 @@ def _run_bracken_impl(
     ]
 
     logger.info("bracken: %s", " ".join(cmd))
-    run_command(cmd, capture_err_tail=80)
+    run_command(
+        cmd,
+        capture_err_tail=80,
+        events_file=events_file,
+        run_name=run_name,
+        step="contamination",
+        tool="bracken",
+        sample=sample_name,
+    )
 
     if not output_path.exists():
         raise RuntimeError(
@@ -251,6 +310,21 @@ def _run_bracken_impl(
             "(missing report, wrong -r read length vs bracken-build, etc.); check Prefect logs "
             "above for Bracken messages."
         )
+
+    if events_file:
+        for p, kind in [(output_path, "output"), (report_path, "report")]:
+            append_event(
+                events_file,
+                {
+                    "type": "asset_created",
+                    "run_name": run_name,
+                    "step": "contamination",
+                    "tool": "bracken",
+                    "kind": kind,
+                    "path": str(p),
+                    "sample": sample_name,
+                },
+            )
 
     return {
         "sample": sample_name,
@@ -265,6 +339,8 @@ def run_fastq_screen(
     outdir: Path,
     threads: int,
     fastq_screen_conf: Path,
+    events_file: str | None = None,
+    run_name: str | None = None,
 ) -> dict:
     logger = get_run_logger()
     require_executable("fastq_screen")
@@ -293,7 +369,15 @@ def run_fastq_screen(
     ]
 
     logger.info("fastq_screen: %s", " ".join(cmd))
-    run_command(cmd, capture_err_tail=80)
+    run_command(
+        cmd,
+        capture_err_tail=80,
+        events_file=events_file,
+        run_name=run_name,
+        step="contamination",
+        tool="fastq_screen",
+        sample=sample.name,
+    )
 
     reports = [_fastq_screen_report_path(sample_dir, Path(f)) for f in inputs]
     missing = [p for p in reports if not p.exists()]
@@ -302,6 +386,33 @@ def run_fastq_screen(
             "Missing FastQ Screen output(s): "
             + ", ".join(str(p) for p in missing)
         )
+
+    if events_file:
+        append_event(
+            events_file,
+            {
+                "type": "asset_created",
+                "run_name": run_name,
+                "step": "contamination",
+                "tool": "fastq_screen",
+                "kind": "config",
+                "path": str(resolved_conf),
+                "sample": sample.name,
+            },
+        )
+        for p in reports:
+            append_event(
+                events_file,
+                {
+                    "type": "asset_created",
+                    "run_name": run_name,
+                    "step": "contamination",
+                    "tool": "fastq_screen",
+                    "kind": "report",
+                    "path": str(p),
+                    "sample": sample.name,
+                },
+            )
 
     return {
         "sample": sample.name,
@@ -327,14 +438,18 @@ def _resolve_kraken_bracken_dbs(
 
 
 def _submit_kraken(
+    *,
     samples: list[Sample],
     outdir: Path,
     per_task_threads: int,
     kraken_db: Path | None,
-    _bracken_db: Path | None,
-    _fastq_screen_conf: Path | None,
-    _read_length: int,
+    bracken_db: Path | None,
+    fastq_screen_conf: Path | None,
+    read_length: int,
+    events_file: str | None,
+    run_name: str | None,
 ) -> PrefectFutureList:
+    _ = bracken_db, fastq_screen_conf, read_length
     if not kraken_db:
         raise SystemExit("Kraken requires kraken_db")
     n = len(samples)
@@ -343,18 +458,24 @@ def _submit_kraken(
         outdir=[outdir] * n,
         threads=[per_task_threads] * n,
         kraken_db=[Path(kraken_db)] * n,
+        events_file=[events_file] * n,
+        run_name=[run_name] * n,
     )
 
 
 def _submit_kraken_bracken(
+    *,
     samples: list[Sample],
     outdir: Path,
     per_task_threads: int,
     kraken_db: Path | None,
     bracken_db: Path | None,
-    _fastq_screen_conf: Path | None,
+    fastq_screen_conf: Path | None,
     read_length: int,
+    events_file: str | None,
+    run_name: str | None,
 ) -> PrefectFutureList:
+    _ = fastq_screen_conf
     kraken_path, bracken_path = _resolve_kraken_bracken_dbs(kraken_db, bracken_db)
     n = len(samples)
     return run_kraken_bracken.map(
@@ -364,18 +485,24 @@ def _submit_kraken_bracken(
         kraken_db=[kraken_path] * n,
         bracken_db=[bracken_path] * n,
         read_length=[read_length] * n,
+        events_file=[events_file] * n,
+        run_name=[run_name] * n,
     )
 
 
 def _submit_fastq_screen(
+    *,
     samples: list[Sample],
     outdir: Path,
     per_task_threads: int,
-    _kraken_db: Path | None,
-    _bracken_db: Path | None,
+    kraken_db: Path | None,
+    bracken_db: Path | None,
     fastq_screen_conf: Path | None,
-    _read_length: int,
+    read_length: int,
+    events_file: str | None,
+    run_name: str | None,
 ) -> PrefectFutureList:
+    _ = kraken_db, bracken_db, read_length
     if not fastq_screen_conf:
         raise SystemExit("fastq_screen requires config file")
     n = len(samples)
@@ -384,10 +511,12 @@ def _submit_fastq_screen(
         outdir=[outdir] * n,
         threads=[per_task_threads] * n,
         fastq_screen_conf=[Path(fastq_screen_conf)] * n,
+        events_file=[events_file] * n,
+        run_name=[run_name] * n,
     )
 
 
-CONTAM_TOOL_REGISTRY: dict[str, ContamSubmitter] = {
+CONTAM_TOOL_REGISTRY: dict[str, Any] = {
     "kraken": _submit_kraken,
     "kraken_bracken": _submit_kraken_bracken,
     "fastq_screen": _submit_fastq_screen,
@@ -399,6 +528,9 @@ def submit_contamination_tasks(
     contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
     outdir: Path,
     per_task_threads: int,
+    *,
+    events_file: str | None = None,
+    run_name: str | None = None,
     kraken_db: Path | None = None,
     bracken_db: Path | None = None,
     fastq_screen_conf: Path | None = None,
@@ -410,13 +542,15 @@ def submit_contamination_tasks(
     if submitter is None:
         raise SystemExit(f"Unknown contamination tool: {contamination_tool}")
     return submitter(
-        samples,
-        outdir,
-        per_task_threads,
-        kraken_db,
-        bracken_db,
-        fastq_screen_conf,
-        read_length,
+        samples=samples,
+        outdir=outdir,
+        per_task_threads=per_task_threads,
+        kraken_db=kraken_db,
+        bracken_db=bracken_db,
+        fastq_screen_conf=fastq_screen_conf,
+        read_length=read_length,
+        events_file=events_file,
+        run_name=run_name,
     )
 
 
@@ -426,6 +560,9 @@ def _contamination_submit_flow(
     contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
     outdir: Path,
     per_task_threads: int,
+    *,
+    events_file: str | None = None,
+    run_name: str | None = None,
     kraken_db: Path | None = None,
     bracken_db: Path | None = None,
     fastq_screen_conf: Path | None = None,
@@ -436,6 +573,8 @@ def _contamination_submit_flow(
         contamination_tool=contamination_tool,
         outdir=outdir,
         per_task_threads=per_task_threads,
+        events_file=events_file,
+        run_name=run_name,
         kraken_db=kraken_db,
         bracken_db=bracken_db,
         fastq_screen_conf=fastq_screen_conf,
@@ -449,6 +588,9 @@ def contamination_phase(
     contamination_tool: Literal["kraken", "kraken_bracken", "fastq_screen"],
     outdir: Path,
     thread_budget: int,
+    *,
+    events_file: str | None = None,
+    run_name: str | None = None,
     kraken_db: Path | None = None,
     bracken_db: Path | None = None,
     fastq_screen_conf: Path | None = None,
@@ -476,6 +618,8 @@ def contamination_phase(
         contamination_tool=contamination_tool,
         outdir=outdir,
         per_task_threads=per_task_threads,
+        events_file=events_file,
+        run_name=run_name,
         kraken_db=kraken_db,
         bracken_db=bracken_db,
         fastq_screen_conf=fastq_screen_conf,

@@ -1,0 +1,66 @@
+id: demux_prefect
+description: Run the Prefect demux/QC pipeline through a minimal template interface.
+
+params:
+  outdir:
+    type: str
+    required: true
+    cli: "--outdir"
+    description: "Root output directory."
+  bcl_dir:
+    type: str
+    required: true
+    cli: "--bcl_dir"
+    description: "BCL run folder for bcl-convert."
+  samplesheet:
+    type: str
+    required: true
+    cli: "--samplesheet"
+    description: "Sample sheet passed to bcl-convert."
+  qc_tool:
+    type: str
+    required: false
+    default: "falco"
+    cli: "--qc-tool"
+    description: "QC tool(s): fastqc,fastp,falco."
+  contamination_tool:
+    type: str
+    required: false
+    default: "none"
+    cli: "--contamination-tool"
+    description: "Contamination tool(s): kraken,kraken_bracken,fastq_screen,none."
+  threads:
+    type: int
+    required: false
+    default: 4
+    cli: "--threads"
+    description: "Global CPU thread budget."
+  run_name:
+    type: str
+    required: false
+    cli: "--run-name"
+    description: "Optional run name override."
+  kraken_db:
+    type: str
+    required: false
+    cli: "--kraken-db"
+    description: "Required for contamination_tool=kraken."
+  bracken_db:
+    type: str
+    required: false
+    cli: "--bracken-db"
+    description: "Optional with kraken_bracken (falls back to kraken_db)."
+  fastq_screen_conf:
+    type: str
+    required: false
+    cli: "--fastq-screen-conf"
+    description: "Required for contamination_tool=fastq_screen."
+
+render:
+  into: "${ctx.project_dir}/${ctx.template.id}/"
+  files:
+    - run.py -> run.py
+    - README.md -> README.md
+
+run:
+  entry: "run.py"

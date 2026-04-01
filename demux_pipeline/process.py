@@ -7,7 +7,7 @@ import time
 from typing import Sequence
 
 from prefect import get_run_logger
-from observability import get_observer
+from demux_pipeline.observability import get_observer
 
 
 def require_executable(exe: str) -> None:

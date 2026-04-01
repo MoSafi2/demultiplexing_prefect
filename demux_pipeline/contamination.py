@@ -6,9 +6,9 @@ from typing import Literal
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from prefect.futures import PrefectFutureList
-from models import Sample
-from process import require_executable, run_command
-from observability import record_asset
+from demux_pipeline.models import Sample
+from demux_pipeline.process import require_executable, run_command
+from demux_pipeline.observability import record_asset
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)

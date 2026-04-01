@@ -10,10 +10,10 @@ from prefect.futures import PrefectFutureList
 # Lets MultiQC pick up Bracken `-w` reports (see multiqc_config.yaml).
 MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
 
-from demux import BCL_CONVERT_OUTDIR_NAME
-from models import Sample
-from process import run_command
-from observability import record_asset
+from demux_pipeline.demux import BCL_CONVERT_OUTDIR_NAME
+from demux_pipeline.models import Sample
+from demux_pipeline.process import run_command
+from demux_pipeline.observability import record_asset
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -164,7 +164,7 @@ def run_fastp(
             "--disable_trim_poly_g",
         ]
 
-    logger.info("fastp (QC-only): %s", " ".join(cmd))
+    logger.info("fastp (QC stage): %s", " ".join(cmd))
     run_command(cmd, step="qc", tool="fastp", sample=sample.name, capture_err_tail=80)
 
     for p, kind in [(html_path, "report_html"), (json_path, "report_json"), (out_r1, "fastq")]:

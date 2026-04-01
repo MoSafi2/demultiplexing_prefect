@@ -27,7 +27,7 @@ def test_events_jsonl_append_and_summary(tmp_path: Path) -> None:
     ctx = obs.RunContext(
         run_name="t",
         outdir=str(tmp_path),
-        mode="qc",
+        mode="demux",
         qc_tool="falco",
         contamination_tool=None,
         thread_budget=1,
@@ -57,13 +57,13 @@ def test_create_run_table_emits_artifact(tmp_path: Path) -> None:
     summary = {
         "context": {
             "run_name": "unit_test",
-            "mode": "qc",
+            "mode": "demux",
             "qc_tool": "falco",
             "contamination_tool": None,
             "outdir": "/tmp/out",
             "started_at": "2026-01-01T00:00:00+00:00",
             "thread_budget": 4,
-            "inputs": {"bcl_dir": None, "in_fastq_dir": "/tmp/fq"},
+            "inputs": {"bcl_dir": "/tmp/bcl", "samplesheet": "/tmp/SampleSheet.csv"},
         },
         "counts": {"events": 3, "assets": 2, "commands": 2, "phases": 2, "failures": 0},
         "durations_by_step": {
@@ -137,7 +137,7 @@ def test_observer_finalize_summary(tmp_path: Path) -> None:
     ctx = obs.RunContext(
         run_name="unit_test",
         outdir=str(tmp_path),
-        mode="qc",
+        mode="demux",
         qc_tool="falco",
         contamination_tool=None,
         thread_budget=1,

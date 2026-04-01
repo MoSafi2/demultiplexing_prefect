@@ -147,6 +147,11 @@ def get_observer() -> Observer | None:
     return _current_observer
 
 
+def reset_observer() -> None:
+    global _current_observer
+    _current_observer = None
+
+
 def init_run_tracking(
     outdir: Path,
     run_name: str,
@@ -156,8 +161,6 @@ def init_run_tracking(
     thread_budget: int,
     bcl_dir: Path | None,
     samplesheet: Path | None,
-    manifest_tsv: Path | None,
-    in_fastq_dir: Path | None,
 ) -> tuple[RunContext, Observer]:
     """Create RunContext + Observer and start pipeline tracking."""
     events_file = events_path(outdir, run_name)
@@ -174,8 +177,6 @@ def init_run_tracking(
         inputs={
             "bcl_dir": str(bcl_dir) if bcl_dir else None,
             "samplesheet": str(samplesheet) if samplesheet else None,
-            "manifest_tsv": str(manifest_tsv) if manifest_tsv else None,
-            "in_fastq_dir": str(in_fastq_dir) if in_fastq_dir else None,
         },
     )
     observer = Observer(

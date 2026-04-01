@@ -23,12 +23,12 @@ def _import_cli():
     return mod
 
 
-def _base_qc_args(tmp_path: Path) -> list[str]:
+def _base_args(tmp_path: Path) -> list[str]:
     return [
-        "--mode",
-        "qc",
-        "--manifest-tsv",
-        str(tmp_path / "manifest.tsv"),
+        "--bcl_dir",
+        str(tmp_path / "bcl"),
+        "--samplesheet",
+        str(tmp_path / "SampleSheet.csv"),
         "--outdir",
         str(tmp_path / "out"),
         "--qc-tool",
@@ -41,7 +41,7 @@ def test_validate_args_parses_and_dedupes_multi_tool_flags(tmp_path: Path) -> No
     parser = cli_mod._build_parser()
     args = cli_mod._validate_args(
         parser,
-        _base_qc_args(tmp_path)
+        _base_args(tmp_path)
         + [
             "--qc-tool",
             "fastqc,fastp,fastqc",
@@ -63,7 +63,7 @@ def test_validate_args_rejects_none_combined_with_other_tool(tmp_path: Path) -> 
     with pytest.raises(SystemExit):
         cli_mod._validate_args(
             parser,
-            _base_qc_args(tmp_path)
+            _base_args(tmp_path)
             + ["--contamination-tool", "none,kraken", "--kraken-db", str(tmp_path / "db")],
         )
 
@@ -76,7 +76,7 @@ def test_validate_args_requires_tool_specific_dependencies_in_multi_mode(
     with pytest.raises(SystemExit):
         cli_mod._validate_args(
             parser,
-            _base_qc_args(tmp_path)
+            _base_args(tmp_path)
             + ["--contamination-tool", "kraken,fastq_screen"],
         )
 
@@ -86,6 +86,29 @@ def test_validate_args_allows_none_only_for_contamination(tmp_path: Path) -> Non
     parser = cli_mod._build_parser()
     args = cli_mod._validate_args(
         parser,
-        _base_qc_args(tmp_path) + ["--contamination-tool", "none"],
+        _base_args(tmp_path) + ["--contamination-tool", "none"],
     )
     assert args.contamination_tool == "none"
+
+
+def test_build_run_config_maps_validated_args(tmp_path: Path) -> None:
+    cli_mod = _import_cli()
+    parser = cli_mod._build_parser()
+    args = cli_mod._validate_args(
+        parser,
+        _base_args(tmp_path)
+        + [
+            "--qc-tool",
+            "fastqc,fastp",
+            "--contamination-tool",
+            "none",
+            "--threads",
+            "3",
+        ],
+    )
+    cfg = cli_mod.build_run_config(args)
+    assert cfg.bcl_dir == tmp_path / "bcl"
+    assert cfg.samplesheet == tmp_path / "SampleSheet.csv"
+    assert cfg.qc_tool == "fastqc,fastp"
+    assert cfg.thread_budget == 3
+    assert cfg.contamination_tool is None

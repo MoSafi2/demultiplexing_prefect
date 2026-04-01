@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-"""Smoke test for the QC-only Prefect flow using real fastqc / fastp / falco binaries."""
+"""Smoke test for demux->QC flow using mocked demultiplexing."""
 
 from __future__ import annotations
 
 import argparse
 import gzip
 import shutil
-import sys
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-DEMUX_PIPELINE_DIR = REPO_ROOT / "demux_pipeline"
-
+from unittest.mock import patch
 
 def write_tiny_fastq_gz(path: Path, read_name: str = "smoke_read") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -34,16 +28,10 @@ def _parse_modes(raw: str) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    # Only adjust PYTHONPATH when the script is actually executed.
-    # This avoids interfering with pytest collection/import of `test/demux/*`.
-    if str(DEMUX_PIPELINE_DIR) not in sys.path:
-        # Pipeline modules use "flat" imports like `from models import Sample`.
-        sys.path.insert(0, str(DEMUX_PIPELINE_DIR))
-
-    from demux_pipeline.pipeline import demux_pipeline  # noqa: E402
+    from demux_pipeline.pipeline import demux_pipeline
 
     parser = argparse.ArgumentParser(
-        description="Run demux_pipeline (QC-only mode) on synthetic FASTQ.gz files (smoke test).",
+        description="Run demux_pipeline with synthetic demux output (smoke test).",
     )
     parser.add_argument(
         "--outdir",
@@ -87,19 +75,27 @@ def main(argv: list[str] | None = None) -> None:
         fq_path = fastq_dir / "smoke_S1_L001_R1_001.fastq.gz"
         write_tiny_fastq_gz(fq_path)
 
-        manifest = run_dir / "manifest.tsv"
-        manifest.write_text(f"smoke\t{fq_path}\n", encoding="utf-8")
-
         outdir = run_dir / "out"
         print(
             f"Smoke: demux_pipeline qc_tool={qc_tool!r} outdir={outdir}", flush=True
         )
-        demux_pipeline(
-            qc_tool=qc_tool,
-            thread_budget=args.threads,
-            outdir=outdir,
-            manifest_tsv=manifest,
-        )
+        bcl_dir = run_dir / "bcl"
+        samplesheet = run_dir / "SampleSheet.csv"
+        bcl_dir.mkdir(parents=True, exist_ok=True)
+        samplesheet.write_text("dummy\n", encoding="utf-8")
+
+        def _mock_demux(**_) -> None:
+            demux_out = outdir / "output"
+            write_tiny_fastq_gz(demux_out / "smoke_S1_L001_R1_001.fastq.gz")
+
+        with patch("demux_pipeline.pipeline.demux_bcl", side_effect=_mock_demux):
+            demux_pipeline(
+                qc_tool=qc_tool,
+                thread_budget=args.threads,
+                outdir=outdir,
+                bcl_dir=bcl_dir,
+                samplesheet=samplesheet,
+            )
 
 
 if __name__ == "__main__":

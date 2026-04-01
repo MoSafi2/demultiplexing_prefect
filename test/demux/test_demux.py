@@ -111,7 +111,7 @@ def test_samples_from_fastq_dir_builds_samples_and_skips_incomplete(tmp_path: Pa
 
 
 def test_write_samples_tsv(tmp_path: Path) -> None:
-    from models import Sample
+    from demux_pipeline.models import Sample
 
     out = tmp_path / "samples.tsv"
     s1 = Sample(name="s1", r1=Path("/tmp/s1_R1.fastq.gz"), r2=None)
@@ -119,7 +119,7 @@ def test_write_samples_tsv(tmp_path: Path) -> None:
 
     demux_mod._write_samples_tsv([s1, s2], out)
     assert out.read_text(encoding="utf-8") == (
-        "s1\t/tmp/s1_R1.fastq.gz\tNone\n"
+        "s1\t/tmp/s1_R1.fastq.gz\t\n"
         "s2\t/tmp/s2_R1.fastq.gz\t/tmp/s2_R2.fastq.gz\n"
     )
 

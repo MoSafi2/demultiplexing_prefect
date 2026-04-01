@@ -6,9 +6,9 @@ import shutil
 from pathlib import Path
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
-from models import Sample
-from process import run_command
-from observability import record_asset
+from demux_pipeline.models import Sample
+from demux_pipeline.process import run_command
+from demux_pipeline.observability import record_asset
 
 
 # Parent `--outdir` contains this subdirectory with all bcl-convert artifacts (FASTQs, Reports, etc.).
@@ -90,7 +90,8 @@ def _samples_from_fastq_dir(
 def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
     with path.open("w") as f:
         for sample in samples:
-            f.write(f"{sample.name}\t{sample.r1}\t{sample.r2}\n")
+            r2 = str(sample.r2) if sample.r2 is not None else ""
+            f.write(f"{sample.name}\t{sample.r1}\t{r2}\n")
 
 
 def _resolve_bcl_convert_binary() -> str:

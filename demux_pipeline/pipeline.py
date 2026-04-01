@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, List, Literal
+from typing import Any, Iterable, List
 
 from prefect import flow, get_run_logger
 from prefect.task_runners import ThreadPoolTaskRunner
@@ -16,6 +16,29 @@ from observability import (
     init_run_tracking,
     slugify_run_name,
 )
+
+
+def _normalize_tools(
+    tools: str | Iterable[str] | None,
+    *,
+    default: str | None = None,
+) -> list[str]:
+    if tools is None:
+        return [default] if default else []
+    if isinstance(tools, str):
+        parts = [p.strip().lower() for p in tools.split(",")]
+    else:
+        parts = [str(p).strip().lower() for p in tools]
+    normalized = [p for p in parts if p]
+    if not normalized and default:
+        return [default]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for tool in normalized:
+        if tool not in seen:
+            deduped.append(tool)
+            seen.add(tool)
+    return deduped
 
 
 def _allocate_sample_parallelism(
@@ -90,8 +113,9 @@ def _resolve_run_name(
     **_: Any,
 ) -> str:
     mode = "demux" if bcl_dir else "qc"
+    qc_tools = _normalize_tools(qc_tool, default="falco")
     return slugify_run_name(run_name or "") or default_run_name(
-        mode=mode, qc_tool=qc_tool
+        mode=mode, qc_tool="+".join(qc_tools)
     )
 
 
@@ -105,30 +129,36 @@ def demux_pipeline(
     manifest_tsv: Path | None = None,
     in_fastq_dir: Path | None = None,
     # Common
-    qc_tool: str = "falco",
+    qc_tool: str | list[str] = "falco",
     thread_budget: int = 4,
     outdir: Path | str,
     run_name: str | None = None,
-    contamination_tool: (
-        Literal["kraken", "kraken_bracken", "fastq_screen"] | None
-    ) = None,
+    contamination_tool: str | list[str] | None = None,
     kraken_db: Path | None = None,
     bracken_db: Path | None = None,
     fastq_screen_conf: Path | None = None,
     read_length: int = 150,
 ) -> None:
     mode = "demux" if bcl_dir else "qc"
+    qc_tools = _normalize_tools(qc_tool, default="falco")
+    contamination_tools = [
+        t for t in _normalize_tools(contamination_tool) if t != "none"
+    ]
+    qc_label = "+".join(qc_tools)
+    contamination_label = (
+        "+".join(contamination_tools) if contamination_tools else None
+    )
     outdir_path = Path(outdir)
     resolved = slugify_run_name(run_name or "") or default_run_name(
-        mode=mode, qc_tool=qc_tool
+        mode=mode, qc_tool=qc_label
     )
 
     ctx, observer = init_run_tracking(
         outdir_path,
         resolved,
         mode,
-        qc_tool,
-        contamination_tool,
+        qc_label,
+        contamination_label,
         thread_budget,
         bcl_dir,
         samplesheet,
@@ -169,21 +199,33 @@ def demux_pipeline(
     # --- Stages 2 & 3: QC + Contamination (concurrent) ---
     with ThreadPoolTaskRunner(max_workers=max_workers):
         observer.phase_started("qc")
-        futures = submit_qc_tasks(samples, qc_tool, outdir_path, per_task_threads)
+        qc_futures = [
+            submit_qc_tasks(samples, tool, outdir_path, per_task_threads)
+            for tool in qc_tools
+        ]
+        futures = qc_futures[0]
+        for future_list in qc_futures[1:]:
+            futures.extend(future_list)
 
         contam_futures = None
-        if contamination_tool:
+        if contamination_tools:
             observer.phase_started("contamination")
-            contam_futures = submit_contamination_tasks(
-                samples,
-                contamination_tool,
-                outdir_path,
-                per_task_threads,
-                kraken_db=kraken_db,
-                bracken_db=bracken_db,
-                fastq_screen_conf=fastq_screen_conf,
-                read_length=read_length,
-            )
+            contam_batches = [
+                submit_contamination_tasks(
+                    samples,
+                    tool,
+                    outdir_path,
+                    per_task_threads,
+                    kraken_db=kraken_db,
+                    bracken_db=bracken_db,
+                    fastq_screen_conf=fastq_screen_conf,
+                    read_length=read_length,
+                )
+                for tool in contamination_tools
+            ]
+            contam_futures = contam_batches[0]
+            for future_list in contam_batches[1:]:
+                contam_futures.extend(future_list)
 
         if contam_futures is not None:
             futures.extend(contam_futures)
@@ -197,7 +239,7 @@ def demux_pipeline(
     observer.phase_started("multiqc")
     run_multiqc(
         outdir_path,
-        include_contamination=bool(contamination_tool),
+        include_contamination=bool(contamination_tools),
     )
     observer.phase_finished("multiqc")
 

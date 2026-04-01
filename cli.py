@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Iterable
 
 # This repo's pipeline modules use "flat" imports like `from models import Sample`
 # (i.e., they expect `demux_pipeline/` to be on `PYTHONPATH`).
@@ -15,6 +15,37 @@ if str(DEMUX_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(DEMUX_PIPELINE_DIR))
 
 from demux_pipeline.pipeline import demux_pipeline  # noqa: E402
+
+ALLOWED_QC_TOOLS = {"fastqc", "fastp", "falco"}
+ALLOWED_CONTAMINATION_TOOLS = {"kraken", "kraken_bracken", "fastq_screen", "none"}
+
+
+def _parse_tool_csv(
+    raw: str | None,
+    *,
+    allowed: Iterable[str],
+    flag_name: str,
+) -> list[str]:
+    if raw is None:
+        return []
+    allowed_set = {s.lower() for s in allowed}
+    values = [token.strip().lower() for token in str(raw).split(",")]
+    values = [v for v in values if v]
+    if not values:
+        return []
+    bad = [v for v in values if v not in allowed_set]
+    if bad:
+        raise argparse.ArgumentTypeError(
+            f"Unknown value(s) for {flag_name}: {', '.join(bad)}. "
+            f"Allowed: {', '.join(sorted(allowed_set))}."
+        )
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for v in values:
+        if v not in seen:
+            deduped.append(v)
+            seen.add(v)
+    return deduped
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -33,8 +64,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--qc-tool",
         required=True,
         default="falco",
-        choices=["fastqc", "fastp", "falco"],
-        help="Which QC program to run: fastqc|fastp|falco. Default: falco.",
+        help=(
+            "Which QC program(s) to run: fastqc, fastp, falco. "
+            "Use comma-separated values to run multiple (e.g. fastqc,fastp). "
+            "Default: falco."
+        ),
     )
 
     parser.add_argument(
@@ -106,12 +140,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--contamination-tool",
         required=False,
-        choices=["kraken", "kraken_bracken", "fastq_screen", "none"],
         default=None,
         help=(
-            "Optional contamination after QC: kraken (Kraken2 only), "
+            "Optional contamination tool(s) after QC: kraken (Kraken2 only), "
             "kraken_bracken (Kraken2 then Bracken; same DB path as kraken after bracken-build), "
-            "or fastq_screen (default: disabled)."
+            "fastq_screen, or none. Use comma-separated values to run multiple tools "
+            "(default: disabled)."
         ),
     )
 
@@ -155,6 +189,32 @@ def _validate_args(
     """Validate command line arguments."""
     args = parser.parse_args(argv)
 
+    try:
+        qc_tools = _parse_tool_csv(
+            args.qc_tool,
+            allowed=ALLOWED_QC_TOOLS,
+            flag_name="--qc-tool",
+        )
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
+    if not qc_tools:
+        parser.error("--qc-tool requires at least one value.")
+    args.qc_tool = ",".join(qc_tools)
+
+    try:
+        contamination_tools = _parse_tool_csv(
+            args.contamination_tool,
+            allowed=ALLOWED_CONTAMINATION_TOOLS,
+            flag_name="--contamination-tool",
+        )
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
+    if "none" in contamination_tools and len(contamination_tools) > 1:
+        parser.error(
+            "--contamination-tool value 'none' cannot be combined with other tools."
+        )
+    args.contamination_tool = ",".join(contamination_tools) if contamination_tools else None
+
     if args.mode.lower() == "demux":
         if args.bcl_dir is None or args.samplesheet is None:
             parser.error("--mode demux requires --bcl_dir and --samplesheet.")
@@ -167,11 +227,12 @@ def _validate_args(
                 "In --mode QC, provide exactly one of --manifest-tsv or --in-fastq-dir."
             )
 
-    if args.contamination_tool == "kraken":
+    contamination_set = set(contamination_tools)
+    if "kraken" in contamination_set:
         if args.kraken_db is None:
             parser.error("--kraken-db is required when --contamination-tool kraken.")
 
-    if args.contamination_tool == "kraken_bracken":
+    if "kraken_bracken" in contamination_set:
         if args.bracken_db is None and args.kraken_db is None:
             parser.error(
                 "--bracken-db or --kraken-db is required when --contamination-tool "
@@ -180,7 +241,7 @@ def _validate_args(
         if args.bracken_db is None:
             args.bracken_db = args.kraken_db
 
-    if args.contamination_tool == "fastq_screen" and args.fastq_screen_conf is None:
+    if "fastq_screen" in contamination_set and args.fastq_screen_conf is None:
         parser.error(
             "--fastq-screen-conf is required when --contamination-tool fastq_screen."
         )
@@ -205,7 +266,9 @@ def main(argv: list[str]) -> None:
         outdir=args.outdir,
         run_name=args.run_name,
         contamination_tool=(
-            None if args.contamination_tool == "none" else args.contamination_tool
+            None
+            if args.contamination_tool in (None, "none")
+            else args.contamination_tool
         ),
         kraken_db=args.kraken_db,
         bracken_db=args.bracken_db,

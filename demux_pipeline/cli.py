@@ -24,6 +24,7 @@ class PipelineRunConfig:
     kraken_db: Path | None
     bracken_db: Path | None
     fastq_screen_conf: Path | None
+    output_contract_file: Path | None
 
 
 def _parse_tool_csv(
@@ -154,6 +155,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to FastQ Screen config file.",
     )
+    parser.add_argument(
+        "--output-contract-file",
+        required=False,
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSON file path to write template output contract "
+            "(samples_tsv, qc_dir, contamination_dir, multiqc_report, run_summary)."
+        ),
+    )
 
     return parser
 
@@ -230,6 +241,7 @@ def build_run_config(args: argparse.Namespace) -> PipelineRunConfig:
         kraken_db=args.kraken_db,
         bracken_db=args.bracken_db,
         fastq_screen_conf=args.fastq_screen_conf,
+        output_contract_file=args.output_contract_file,
     )
 
 
@@ -251,6 +263,7 @@ def run_with_config(config: PipelineRunConfig) -> None:
         kraken_db=config.kraken_db,
         bracken_db=config.bracken_db,
         fastq_screen_conf=config.fastq_screen_conf,
+        output_contract_file=config.output_contract_file,
     )
 
 

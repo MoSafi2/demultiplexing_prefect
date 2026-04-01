@@ -10,15 +10,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _import_cli():
-    if "cli" in sys.modules and hasattr(sys.modules["cli"], "_validate_args"):
-        return sys.modules["cli"]
+    if "demux_pipeline.cli" in sys.modules and hasattr(
+        sys.modules["demux_pipeline.cli"], "_validate_args"
+    ):
+        return sys.modules["demux_pipeline.cli"]
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    path = REPO_ROOT / "cli.py"
-    spec = importlib.util.spec_from_file_location("cli", path)
+    path = REPO_ROOT / "demux_pipeline" / "cli.py"
+    spec = importlib.util.spec_from_file_location("demux_pipeline.cli", path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["cli"] = mod
+    sys.modules["demux_pipeline.cli"] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -112,3 +114,16 @@ def test_build_run_config_maps_validated_args(tmp_path: Path) -> None:
     assert cfg.qc_tool == "fastqc,fastp"
     assert cfg.thread_budget == 3
     assert cfg.contamination_tool is None
+    assert cfg.output_contract_file is None
+
+
+def test_build_run_config_maps_output_contract_file(tmp_path: Path) -> None:
+    cli_mod = _import_cli()
+    parser = cli_mod._build_parser()
+    contract_path = tmp_path / "template_outputs.json"
+    args = cli_mod._validate_args(
+        parser,
+        _base_args(tmp_path) + ["--output-contract-file", str(contract_path)],
+    )
+    cfg = cli_mod.build_run_config(args)
+    assert cfg.output_contract_file == contract_path

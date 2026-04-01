@@ -7,7 +7,7 @@
 id: demux_prefect
 kind: template
 descriptor: templates/demux_prefect/template_config.yaml
-run_entry: run.py
+run_entry: run.sh
 required_params:
   - outdir
   - bcl_dir
@@ -35,13 +35,14 @@ Minimal template interface around the existing Prefect demux pipeline.
 
 ## Behavior
 
-- `run.py` reuses the same parser/validation/execution path as `cli.py`.
-- No subprocess CLI invocation is used; it imports and calls Python functions directly.
+- `run.sh` validates required host commands (`pixi`, `bcl-convert`) and executes the pipeline via `pixi run python demux_pipeline/cli.py`.
+- The host system does not need Python directly; Python usage is encapsulated in `pixi run`.
+- `run.sh` passes `--output-contract-file template_outputs.json` so contract generation happens in the pipeline/CLI layer.
 
 ## Published outputs
 
 - This template does not use BPM resolver functions.
-- `run.py` infers outputs from `outdir` and writes `template_outputs.json` in the rendered run directory.
+- `demux_pipeline/cli.py` writes `template_outputs.json` when invoked with `--output-contract-file`, and `run.sh` only forwards template inputs.
 - Output keys:
   - `samples_tsv`: `${outdir}/samples.tsv`
   - `qc_dir`: first existing directory among `${outdir}/falco`, `${outdir}/fastqc`, `${outdir}/fastp`

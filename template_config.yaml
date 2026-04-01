@@ -59,8 +59,8 @@ params:
 render:
   into: "${ctx.project_dir}/${ctx.template.id}/"
   files:
-    - run.py -> run.py
+    - run.sh.j2 -> run.sh
     - README.md -> README.md
 
 run:
-  entry: "run.py"
+  entry: "run.sh"

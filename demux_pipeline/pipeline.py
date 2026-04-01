@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Iterable, List
 
@@ -92,6 +93,35 @@ def _resolve_run_name(
     )
 
 
+def write_output_contract(
+    *,
+    outdir: Path,
+    artifact_path: Path,
+) -> Path:
+    qc_dir = next(
+        (str(p) for p in (outdir / "falco", outdir / "fastqc", outdir / "fastp") if p.exists()),
+        None,
+    )
+    contamination_dir = outdir / "contamination"
+    multiqc_report = outdir / "multiqc" / "multiqc_report.html"
+    summaries = sorted((outdir / ".pipeline").glob("*/run_summary.json"))
+    payload = {
+        "outdir": str(outdir),
+        "outputs": {
+            "samples_tsv": str(outdir / "samples.tsv"),
+            "qc_dir": qc_dir,
+            "contamination_dir": str(contamination_dir) if contamination_dir.exists() else None,
+            "multiqc_report": str(multiqc_report) if multiqc_report.exists() else None,
+            "run_summary": str(summaries[-1]) if summaries else None,
+        },
+    }
+    artifact_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return artifact_path
+
+
 @flow(name="demux-pipeline", flow_run_name=_resolve_run_name, log_prints=True)
 def demux_pipeline(
     *,
@@ -107,6 +137,7 @@ def demux_pipeline(
     bracken_db: Path | None = None,
     fastq_screen_conf: Path | None = None,
     read_length: int = 150,
+    output_contract_file: Path | None = None,
 ) -> None:
     mode = "demux"
     qc_tools = _normalize_tools(qc_tool, default="falco")
@@ -211,6 +242,11 @@ def demux_pipeline(
         observer.pipeline_finished()
         summary = observer.finalize_summary(context=ctx)
         create_run_table(summary)
+        if output_contract_file is not None:
+            write_output_contract(
+                outdir=outdir_path,
+                artifact_path=output_contract_file,
+            )
     finally:
         # Avoid leaking observer state when multiple runs happen in one process.
         reset_observer()

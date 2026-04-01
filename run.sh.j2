@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "ERROR: required command not found in PATH: $1" >&2
+    exit 127
+  fi
+}
+
+RUN_DIR="{% if ctx.project %}{{ ctx.project_dir }}/{{ ctx.template.id }}{% else %}{{ ctx.cwd }}{% endif %}"
+mkdir -p "$RUN_DIR"
+cd "$RUN_DIR"
+mkdir -p results
+RUN_LOG="results/run.log"
+
+if [[ -z "${DEMUX_RUN_LOG_CAPTURED:-}" ]] && command -v script >/dev/null 2>&1; then
+  export DEMUX_RUN_LOG_CAPTURED=1
+  SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  exec script -qefc "bash \"$SCRIPT_PATH\"" "$RUN_LOG"
+fi
+
+echo "Output directory    : {{ ctx.params.outdir }}"
+echo "BCL directory       : {{ ctx.params.bcl_dir }}"
+echo "Sample sheet        : {{ ctx.params.samplesheet }}"
+echo "QC tool(s)          : {{ ctx.params.get('qc_tool', 'falco') }}"
+echo "Contamination tool  : {{ ctx.params.get('contamination_tool', 'none') }}"
+echo "Threads             : {{ ctx.params.get('threads', 4) }}"
+{% if ctx.params.get("run_name") %}
+echo "Run name            : {{ ctx.params.run_name }}"
+{% endif %}
+{% if ctx.params.get("kraken_db") %}
+echo "Kraken DB           : {{ ctx.params.kraken_db }}"
+{% endif %}
+{% if ctx.params.get("bracken_db") %}
+echo "Bracken DB          : {{ ctx.params.bracken_db }}"
+{% endif %}
+{% if ctx.params.get("fastq_screen_conf") %}
+echo "FastQ Screen conf   : {{ ctx.params.fastq_screen_conf }}"
+{% endif %}
+
+require_cmd bcl-convert
+require_cmd pixi
+
+START_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+echo "Installing pixi env : pixi.toml"
+pixi install
+
+{
+  echo "timestamp: \"$START_TS\""
+  echo "command: \"bash run.sh\""
+  echo "params:"
+  echo "  outdir: \"{{ ctx.params.outdir }}\""
+  echo "  bcl_dir: \"{{ ctx.params.bcl_dir }}\""
+  echo "  samplesheet: \"{{ ctx.params.samplesheet }}\""
+  echo "  qc_tool: \"{{ ctx.params.get('qc_tool', 'falco') }}\""
+  echo "  contamination_tool: \"{{ ctx.params.get('contamination_tool', 'none') }}\""
+  echo "  threads: {{ ctx.params.get('threads', 4) }}"
+  echo "  run_name: \"{{ ctx.params.get('run_name', '') }}\""
+  echo "  kraken_db: \"{{ ctx.params.get('kraken_db', '') }}\""
+  echo "  bracken_db: \"{{ ctx.params.get('bracken_db', '') }}\""
+  echo "  fastq_screen_conf: \"{{ ctx.params.get('fastq_screen_conf', '') }}\""
+} > results/run_info.yaml
+
+finalize_run_info() {
+  local exit_code=$?
+  local end_ts
+  end_ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  if [[ $exit_code -eq 0 ]]; then
+    echo "status: \"completed\"" >> results/run_info.yaml
+  else
+    echo "status: \"failed\"" >> results/run_info.yaml
+  fi
+  echo "exit_code: $exit_code" >> results/run_info.yaml
+  echo "completed_at: \"$end_ts\"" >> results/run_info.yaml
+}
+trap finalize_run_info EXIT
+
+declare -a CMD=(
+  pixi run python demux_pipeline/cli.py
+  --outdir "{{ ctx.params.outdir }}"
+  --bcl_dir "{{ ctx.params.bcl_dir }}"
+  --samplesheet "{{ ctx.params.samplesheet }}"
+  --qc-tool "{{ ctx.params.get('qc_tool', 'falco') }}"
+  --contamination-tool "{{ ctx.params.get('contamination_tool', 'none') }}"
+  --threads "{{ ctx.params.get('threads', 4) }}"
+  --output-contract-file "template_outputs.json"
+)
+
+{% if ctx.params.get("run_name") %}
+CMD+=(--run-name "{{ ctx.params.run_name }}")
+{% endif %}
+{% if ctx.params.get("kraken_db") %}
+CMD+=(--kraken-db "{{ ctx.params.kraken_db }}")
+{% endif %}
+{% if ctx.params.get("bracken_db") %}
+CMD+=(--bracken-db "{{ ctx.params.bracken_db }}")
+{% endif %}
+{% if ctx.params.get("fastq_screen_conf") %}
+CMD+=(--fastq-screen-conf "{{ ctx.params.fastq_screen_conf }}")
+{% endif %}
+
+echo "Starting pipeline    : ${CMD[*]}"
+"${CMD[@]}"
+
+echo "Completed             : {{ ctx.params.outdir }}"

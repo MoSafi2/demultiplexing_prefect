@@ -31,7 +31,7 @@ All outputs go under `--outdir`:
 Run:
 
 ```bash
-pixi run python cli.py --qc-tool <tool[,tool...]> --outdir OUTDIR --bcl_dir BCL_DIR --samplesheet SAMPLE_SHEET --threads N --contamination-tool <tool[,tool...]> ...
+pixi run python demux_pipeline/cli.py --qc-tool <tool[,tool...]> --outdir OUTDIR --bcl_dir BCL_DIR --samplesheet SAMPLE_SHEET --threads N --contamination-tool <tool[,tool...]> ...
 ```
 
 `--qc-tool` accepts one or more of: `fastqc`, `fastp`, `falco`.
@@ -43,11 +43,12 @@ pixi run python cli.py --qc-tool <tool[,tool...]> --outdir OUTDIR --bcl_dir BCL_
 * If `kraken` is selected, pass `--kraken-db`.
 * If `kraken_bracken` is selected, pass `--bracken-db` or `--kraken-db`.
 * If `fastq_screen` is selected, pass `--fastq-screen-conf`.
+* Optional: pass `--output-contract-file PATH` to write a template-style output contract JSON.
 
 ### Demux + QC
 
 ```bash
-pixi run python cli.py \
+pixi run python demux_pipeline/cli.py \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
@@ -58,7 +59,7 @@ pixi run python cli.py \
 Optional contamination screening (runs after the QC tool):
 
 ```bash
-pixi run python cli.py \
+pixi run python demux_pipeline/cli.py \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
@@ -71,7 +72,7 @@ pixi run python cli.py \
 Run multiple QC and contamination tools in one invocation:
 
 ```bash
-pixi run python cli.py \
+pixi run python demux_pipeline/cli.py \
   --qc-tool fastqc,fastp \
   --outdir ./demux_qc_out \
   --threads 4 \
@@ -85,7 +86,7 @@ pixi run python cli.py \
 FastQ Screen:
 
 ```bash
-pixi run python cli.py \
+pixi run python demux_pipeline/cli.py \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \

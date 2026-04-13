@@ -19,3 +19,7 @@ bowtie2 = { version = ">=2.5,<3", channel = "bioconda" }
 
 [pypi-dependencies]
 prefect = "*"
+
+[tasks]
+demux-pipeline = "python -m demux_pipeline.cli"
+test = "pytest"

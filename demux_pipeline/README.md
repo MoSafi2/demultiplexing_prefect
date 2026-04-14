@@ -31,7 +31,7 @@ All outputs go under `--outdir`:
 Run:
 
 ```bash
-pixi run python demux_pipeline/cli.py --qc-tool <tool[,tool...]> --outdir OUTDIR --bcl_dir BCL_DIR --samplesheet SAMPLE_SHEET --threads N --contamination-tool <tool[,tool...]> ...
+pixi run demux-pipeline --qc-tool <tool[,tool...]> --outdir OUTDIR --bcl_dir BCL_DIR --samplesheet SAMPLE_SHEET --threads N --contamination-tool <tool[,tool...]> ...
 ```
 
 `--qc-tool` accepts one or more of: `fastqc`, `fastp`, `falco`.
@@ -48,7 +48,7 @@ pixi run python demux_pipeline/cli.py --qc-tool <tool[,tool...]> --outdir OUTDIR
 ### Demux + QC
 
 ```bash
-pixi run python demux_pipeline/cli.py \
+pixi run demux-pipeline \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
@@ -59,7 +59,7 @@ pixi run python demux_pipeline/cli.py \
 Optional contamination screening (runs after the QC tool):
 
 ```bash
-pixi run python demux_pipeline/cli.py \
+pixi run demux-pipeline \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
@@ -72,7 +72,7 @@ pixi run python demux_pipeline/cli.py \
 Run multiple QC and contamination tools in one invocation:
 
 ```bash
-pixi run python demux_pipeline/cli.py \
+pixi run demux-pipeline \
   --qc-tool fastqc,fastp \
   --outdir ./demux_qc_out \
   --threads 4 \
@@ -86,7 +86,7 @@ pixi run python demux_pipeline/cli.py \
 FastQ Screen:
 
 ```bash
-pixi run python demux_pipeline/cli.py \
+pixi run demux-pipeline \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
@@ -98,13 +98,10 @@ pixi run python demux_pipeline/cli.py \
 
 Note: this pipeline writes `outdir/samples.tsv` (tab-separated `sample`, `r1`, `r2`) after demultiplexing and sample discovery.
 
-## Minimal template interface
+## Orchestrator integration
 
-The template variant in `templates/demux_prefect/` uses this minimal contract:
-
-* Required: `outdir`, `bcl_dir`, `samplesheet`
-* Optional: `qc_tool`, `contamination_tool`, `threads`, `run_name`
-* Published outputs: `samples_tsv`, `qc_dir`, `contamination_dir`, `multiqc_report`, `run_summary`
+If you are calling this pipeline from Linkar or another orchestrator, prefer using the
+CLI directly and pass `--output-contract-file` to capture machine-readable outputs.
 
 ## Smoke test
 

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "demux-pipeline"
+version = "0.1.0"
+description = "Standalone demultiplexing, QC, and contamination CLI for Illumina runs."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "prefect",
+]
+
+[project.scripts]
+demux-pipeline = "demux_pipeline.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["demux_pipeline*"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]

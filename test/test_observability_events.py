@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -79,7 +80,15 @@ def test_create_run_table_emits_artifact(tmp_path: Path) -> None:
         return "id"
 
     setattr(obs, "create_table_artifact", _fake_table)
-    obs.create_run_table(summary)
+    previous = os.environ.get("DEMUX_ENABLE_PREFECT_ARTIFACTS")
+    os.environ["DEMUX_ENABLE_PREFECT_ARTIFACTS"] = "1"
+    try:
+        obs.create_run_table(summary)
+    finally:
+        if previous is None:
+            os.environ.pop("DEMUX_ENABLE_PREFECT_ARTIFACTS", None)
+        else:
+            os.environ["DEMUX_ENABLE_PREFECT_ARTIFACTS"] = previous
 
     assert len(table_calls) == 1
     call = table_calls[0]
@@ -107,6 +116,28 @@ def test_create_run_table_emits_artifact(tmp_path: Path) -> None:
     # assets appear as value rows
     asset_values = [r["value"] for r in rows if r["section"] == "assets"]
     assert "/tmp/out/falco/s1_R1" in asset_values
+
+
+def test_create_run_table_skips_artifact_when_disabled() -> None:
+    obs = _load_repo_module("observability", "demux_pipeline/observability.py")
+    table_calls: list[dict] = []
+
+    def _fake_table(**kwargs):
+        table_calls.append(kwargs)
+        return "id"
+
+    setattr(obs, "create_table_artifact", _fake_table)
+    previous = os.environ.get("DEMUX_ENABLE_PREFECT_ARTIFACTS")
+    os.environ.pop("DEMUX_ENABLE_PREFECT_ARTIFACTS", None)
+    try:
+        obs.create_run_table({"context": {}, "counts": {}, "durations_by_step": {}, "assets": []})
+    finally:
+        if previous is None:
+            os.environ.pop("DEMUX_ENABLE_PREFECT_ARTIFACTS", None)
+        else:
+            os.environ["DEMUX_ENABLE_PREFECT_ARTIFACTS"] = previous
+
+    assert table_calls == []
 
 
 def test_observer_records_events_and_assets(tmp_path: Path) -> None:

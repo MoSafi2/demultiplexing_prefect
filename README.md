@@ -119,6 +119,17 @@ When invoked with `--output-contract-file`, the CLI writes a JSON document with:
 This keeps the orchestration boundary small: Linkar can bind params and consume outputs
 without owning the internal demultiplexing logic.
 
+## Prefect artifacts
+
+Prefect table artifact publishing is disabled by default for local CLI runs and tests to
+avoid ephemeral server startup and shutdown noise.
+
+Enable it explicitly when you want Prefect UI artifacts:
+
+```bash
+DEMUX_ENABLE_PREFECT_ARTIFACTS=1 pixi run demux-pipeline ...
+```
+
 ## Output directories
 
 All outputs go under `--outdir`:

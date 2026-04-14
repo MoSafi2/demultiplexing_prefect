@@ -21,6 +21,11 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def prefect_artifacts_enabled() -> bool:
+    raw = os.environ.get("DEMUX_ENABLE_PREFECT_ARTIFACTS", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _epoch_ms() -> int:
     return int(time.time() * 1000)
 
@@ -319,6 +324,8 @@ def finalize_run_summary(
 
 def create_run_table(summary: dict[str, Any]) -> None:
     """Publish one Prefect table artifact with the full run summary."""
+    if not prefect_artifacts_enabled():
+        return
     try:
         ctx = summary.get("context", {})
         counts = summary.get("counts", {})

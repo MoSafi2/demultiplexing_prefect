@@ -40,12 +40,35 @@ def test_run_command_success(tmp_path):
         _call(process_mod, ["echo", "hello"])  # must not raise
 
 
+def test_run_command_success_stays_quiet(capsys):
+    process_mod, _ = _load_process()
+    proc = _mock_popen(returncode=0, stdout="hello\n", stderr="warning\n")
+    with patch.object(process_mod.subprocess, "Popen", return_value=proc):
+        _call(process_mod, ["echo", "hello"])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
 def test_run_command_failure_raises(tmp_path):
     process_mod, _ = _load_process()
     proc = _mock_popen(returncode=1)
     with patch.object(process_mod.subprocess, "Popen", return_value=proc):
         with pytest.raises(RuntimeError, match="echo"):
             _call(process_mod, ["echo", "fail"])
+
+
+def test_run_command_failure_prints_raw_output(capsys):
+    process_mod, _ = _load_process()
+    proc = _mock_popen(returncode=1, stdout="partial out\n", stderr="bad error\n")
+    with patch.object(process_mod.subprocess, "Popen", return_value=proc):
+        with pytest.raises(RuntimeError, match="echo"):
+            _call(process_mod, ["echo", "fail"])
+
+    captured = capsys.readouterr()
+    assert captured.out == "partial out\n"
+    assert captured.err == "bad error\n"
 
 
 def test_run_command_stderr_tail_in_error(tmp_path):

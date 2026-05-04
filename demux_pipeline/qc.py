@@ -10,13 +10,32 @@ from prefect.futures import PrefectFutureList
 # Lets MultiQC pick up Bracken `-w` reports (see multiqc_config.yaml).
 MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
 
-from demux_pipeline.demux import BCL_CONVERT_OUTDIR_NAME
+from demux_pipeline.demux import BCL_CONVERT_OUTDIR_NAME, parse_fastq
 from demux_pipeline.models import Sample
 from demux_pipeline.process import run_command
 from demux_pipeline.observability import record_asset
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _sample_project_dir(root: Path, sample: Sample) -> Path:
+    if not sample.project:
+        return root
+    return root.parent / BCL_CONVERT_OUTDIR_NAME / sample.project / "qc" / root.name
+
+
+def _project_names_from_demux_output(outdir: Path) -> list[str]:
+    demux_root = outdir / BCL_CONVERT_OUTDIR_NAME
+    if not demux_root.exists():
+        return []
+    projects = []
+    for path in sorted(demux_root.iterdir()):
+        if path.is_dir() and any(
+            p.is_file() and parse_fastq(p) for p in path.rglob("*")
+        ):
+            projects.append(path.name)
+    return projects
 
 
 @task
@@ -72,6 +91,48 @@ def run_multiqc(
     if report.exists():
         record_asset(report, step="multiqc", tool="multiqc", kind="report_html")
 
+    project_names = _project_names_from_demux_output(outdir)
+    if not project_names:
+        return
+
+    for project in project_names:
+        project_inputs = [
+            str(tool_root)
+            for tool in ("fastqc", "fastp", "falco")
+            for tool_root in [
+                outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc" / tool
+            ]
+            if tool_root.exists()
+        ]
+        if not project_inputs:
+            continue
+        project_out = outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc" / "multiqc"
+        if project_out.exists():
+            shutil.rmtree(project_out)
+        _ensure_dir(project_out)
+        project_cmd: list[str] = ["multiqc"]
+        if MULTIQC_PROJECT_CONFIG.is_file():
+            project_cmd.extend(["-c", str(MULTIQC_PROJECT_CONFIG)])
+        project_cmd.extend(["-o", str(project_out), *project_inputs])
+        logger.info("multiqc project %s: %s", project, " ".join(project_cmd))
+        run_command(project_cmd, step="multiqc", tool="multiqc", capture_err_tail=80)
+        record_asset(
+            project_out,
+            step="multiqc",
+            tool="multiqc",
+            kind="directory",
+            metadata={"project": project},
+        )
+        project_report = project_out / "multiqc_report.html"
+        if project_report.exists():
+            record_asset(
+                project_report,
+                step="multiqc",
+                tool="multiqc",
+                kind="report_html",
+                metadata={"project": project},
+            )
+
 
 @task(tags=["qc"])
 def run_fastqc(
@@ -80,7 +141,7 @@ def run_fastqc(
     threads: int,
 ) -> None:
     logger = get_run_logger()
-    fastqc_dir = outdir / "fastqc"
+    fastqc_dir = _sample_project_dir(outdir / "fastqc", sample)
     _ensure_dir(fastqc_dir)
     if threads < 1:
         raise ValueError("run_fastqc threads must be >= 1")
@@ -108,8 +169,8 @@ def run_fastp(
 ) -> Path:
     logger = get_run_logger()
 
-    fastp_dir = outdir / "fastp"
-    tmp_dir = outdir / "fastp_passthrough"
+    fastp_dir = _sample_project_dir(outdir / "fastp", sample)
+    tmp_dir = _sample_project_dir(outdir / "fastp_passthrough", sample)
     _ensure_dir(fastp_dir)
     _ensure_dir(tmp_dir)
 
@@ -186,7 +247,7 @@ def run_falco(
         if path is None:
             continue
 
-        falco_dir = outdir / "falco" / f"{sample.name}_{read}"
+        falco_dir = _sample_project_dir(outdir / "falco", sample) / f"{sample.name}_{read}"
         _ensure_dir(falco_dir)
 
         cmd = [
@@ -232,5 +293,3 @@ def submit_qc_tasks(
         )
     else:
         raise SystemExit(f"Unknown QC tool: {qc_tool}")
-
-

@@ -76,10 +76,10 @@ def test_group_fastqs_skips_undetermined_by_default(tmp_path: Path) -> None:
     _touch(tmp_path / "nested" / "Undetermined" / "NA12878_S1_L001_R1_001.fastq.gz")
 
     grouped = demux_mod._group_fastqs(tmp_path)
-    assert grouped == {("LV7011561401", 1): {"R1": good_r1, "R2": good_r2}}
+    assert grouped == {(None, "LV7011561401", 1): {"R1": good_r1, "R2": good_r2}}
 
     grouped_including = demux_mod._group_fastqs(tmp_path, include_undetermined=True)
-    assert ("Undetermined", 1) in grouped_including
+    assert (None, "Undetermined", 1) in grouped_including
 
 
 def test_group_fastqs_recursive_flag(tmp_path: Path) -> None:
@@ -87,10 +87,10 @@ def test_group_fastqs_recursive_flag(tmp_path: Path) -> None:
     nested = _touch(tmp_path / "deep" / "NA12878_S1_R2_001.fastq.gz")
 
     grouped_nonrec = demux_mod._group_fastqs(tmp_path, recursive=False, include_undetermined=True)
-    assert grouped_nonrec == {("NA12878", 1): {"R1": top}}
+    assert grouped_nonrec == {(None, "NA12878", 1): {"R1": top}}
 
     grouped_rec = demux_mod._group_fastqs(tmp_path, recursive=True, include_undetermined=True)
-    assert grouped_rec[("NA12878", 1)] == {"R1": top, "R2": nested}
+    assert grouped_rec[(None, "NA12878", 1)] == {"R1": top, "R2": nested}
 
 
 def test_samples_from_fastq_dir_builds_samples_and_skips_incomplete(tmp_path: Path) -> None:
@@ -110,16 +110,43 @@ def test_samples_from_fastq_dir_builds_samples_and_skips_incomplete(tmp_path: Pa
     assert samples[1].r1 == r1_2 and samples[1].r2 is None
 
 
+def test_samples_from_fastq_dir_preserves_project_folders(tmp_path: Path) -> None:
+    r1_a = _touch(tmp_path / "project-a" / "shared_S1_R1_001.fastq.gz")
+    r1_b = _touch(tmp_path / "project-b" / "shared_S1_R1_001.fastq.gz")
+
+    samples = demux_mod._samples_from_fastq_dir(tmp_path, include_undetermined=True)
+
+    assert [(s.project, s.name, s.r1) for s in samples] == [
+        ("project-a", "shared", r1_a),
+        ("project-b", "shared", r1_b),
+    ]
+
+
+def test_samples_from_fastq_dir_ignores_project_qc_fastqs(tmp_path: Path) -> None:
+    raw = _touch(tmp_path / "project-a" / "shared_S1_R1_001.fastq.gz")
+    _touch(tmp_path / "project-a" / "qc" / "fastp_passthrough" / "shared_R1.fastq.gz")
+
+    samples = demux_mod._samples_from_fastq_dir(tmp_path, include_undetermined=True)
+
+    assert [(s.project, s.name, s.r1) for s in samples] == [
+        ("project-a", "shared", raw),
+    ]
+
+
 def test_write_samples_tsv(tmp_path: Path) -> None:
     from demux_pipeline.models import Sample
 
     out = tmp_path / "samples.tsv"
     s1 = Sample(name="s1", r1=Path("/tmp/s1_R1.fastq.gz"), r2=None)
-    s2 = Sample(name="s2", r1=Path("/tmp/s2_R1.fastq.gz"), r2=Path("/tmp/s2_R2.fastq.gz"))
+    s2 = Sample(
+        name="s2",
+        r1=Path("/tmp/s2_R1.fastq.gz"),
+        r2=Path("/tmp/s2_R2.fastq.gz"),
+        project="p1",
+    )
 
     demux_mod._write_samples_tsv([s1, s2], out)
     assert out.read_text(encoding="utf-8") == (
-        "s1\t/tmp/s1_R1.fastq.gz\t\n"
-        "s2\t/tmp/s2_R1.fastq.gz\t/tmp/s2_R2.fastq.gz\n"
+        "s1\t/tmp/s1_R1.fastq.gz\t\t\n"
+        "s2\t/tmp/s2_R1.fastq.gz\t/tmp/s2_R2.fastq.gz\tp1\n"
     )
-

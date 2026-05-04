@@ -85,3 +85,25 @@ def test_submit_contamination_tasks_dispatch_fastq_screen(tmp_path: Path) -> Non
         )
     assert result == "ok"
     run_map.assert_called_once()
+
+
+def test_sample_contamination_root_uses_project_qc_folder(tmp_path: Path) -> None:
+    contamination_mod, models_mod = _import_contamination_and_models()
+    sample = models_mod.Sample(
+        name="s",
+        r1=tmp_path / "out" / "output" / "project-a" / "s_R1.fastq.gz",
+        project="project-a",
+    )
+
+    assert contamination_mod._sample_contamination_root(tmp_path / "out", sample) == (
+        tmp_path / "out" / "output" / "project-a" / "qc" / "contamination"
+    )
+
+
+def test_sample_contamination_root_keeps_legacy_flat_layout(tmp_path: Path) -> None:
+    contamination_mod, models_mod = _import_contamination_and_models()
+    sample = models_mod.Sample(name="s", r1=tmp_path / "out" / "output" / "s_R1.fastq.gz")
+
+    assert contamination_mod._sample_contamination_root(tmp_path / "out", sample) == (
+        tmp_path / "out" / "contamination"
+    )

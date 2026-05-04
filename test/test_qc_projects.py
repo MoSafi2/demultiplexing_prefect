@@ -49,6 +49,8 @@ def test_output_contract_exports_project_multiqc_reports(tmp_path: Path) -> None
         outdir / "output" / "project-a" / "qc" / "multiqc" / "multiqc_report.html"
     )
     qc_dir = outdir / "output" / "project-a" / "qc"
+    contamination_dir = outdir / "output" / "project-a" / "qc" / "contamination"
+    contamination_dir.mkdir(parents=True)
     contract = tmp_path / "contract.json"
 
     write_output_contract(outdir=outdir, artifact_path=contract)
@@ -56,6 +58,9 @@ def test_output_contract_exports_project_multiqc_reports(tmp_path: Path) -> None
     payload = json.loads(contract.read_text(encoding="utf-8"))
     assert payload["outputs"]["project_qc_dirs"] == {
         "project-a": str(qc_dir)
+    }
+    assert payload["outputs"]["project_contamination_dirs"] == {
+        "project-a": str(contamination_dir)
     }
     assert payload["outputs"]["project_multiqc_reports"] == {
         "project-a": str(report)

@@ -17,6 +17,7 @@ class Sample:
     name: str
     r1: Path
     r2: Path | None = None
+    project: str | None = None
 
     @property
     def paired(self) -> bool:

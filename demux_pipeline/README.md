@@ -26,6 +26,17 @@ All outputs go under `--outdir`:
 * `outdir/contamination/` (optional; Kraken/Bracken or FastQ Screen outputs)
 * `outdir/multiqc/` (MultiQC summary; created only if `multiqc` is available on PATH)
 
+When `Sample_Project` is present, bcl-convert writes FASTQs under
+`outdir/output/<Sample_Project>/`, and QC outputs are written under the same
+project folder: `outdir/output/<Sample_Project>/qc/fastqc/`,
+`outdir/output/<Sample_Project>/qc/fastp/`,
+`outdir/output/<Sample_Project>/qc/fastp_passthrough/`,
+`outdir/output/<Sample_Project>/qc/falco/<sample>_<R1|R2>/`, and
+`outdir/output/<Sample_Project>/qc/multiqc/multiqc_report.html`.
+MultiQC keeps the global report at `outdir/multiqc/multiqc_report.html`.
+When `--output-contract-file` is used, per-project MultiQC reports are exported in
+the `project_multiqc_reports` map.
+
 ## Usage
 
 Run:
@@ -96,7 +107,7 @@ pixi run demux-pipeline \
   --fastq-screen-conf /path/to/fastq_screen.conf
 ```
 
-Note: this pipeline writes `outdir/samples.tsv` (tab-separated `sample`, `r1`, `r2`) after demultiplexing and sample discovery.
+Note: this pipeline writes `outdir/samples.tsv` (tab-separated `sample`, `r1`, `r2`, `project`) after demultiplexing and sample discovery.
 
 ## Orchestrator integration
 

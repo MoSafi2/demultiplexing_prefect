@@ -36,11 +36,15 @@ def parse_fastq(path: Path):
 
 def _group_fastqs(
     root: Path, *, recursive: bool = True, include_undetermined: bool = False
-) -> dict[tuple[str, int], dict[str, Path]]:
+) -> dict[tuple[str | None, str, int], dict[str, Path]]:
     iterator = root.rglob("*") if recursive else root.glob("*")
-    grouped: dict[tuple[str, int], dict[str, Path]] = defaultdict(dict)
-    for path in iterator:
-        if not path.is_file():
+    paths = [path for path in iterator if path.is_file()]
+    has_top_level_fastq = any(
+        parse_fastq(path) for path in paths if path.parent == root
+    )
+    grouped: dict[tuple[str | None, str, int], dict[str, Path]] = defaultdict(dict)
+    for path in paths:
+        if _is_under_qc_dir(root, path):
             continue
         if not include_undetermined:
             # Skip undetermined reads
@@ -50,8 +54,25 @@ def _group_fastqs(
         if not parsed:
             continue
         read_key = f"R{parsed['read']}"
-        grouped[parsed["sample"], parsed["chunk"]][read_key] = path
+        project = None if has_top_level_fastq else _project_from_fastq_path(root, path)
+        grouped[project, parsed["sample"], parsed["chunk"]][read_key] = path
     return grouped
+
+
+def _is_under_qc_dir(root: Path, path: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    return "qc" in rel.parts
+
+
+def _project_from_fastq_path(root: Path, path: Path) -> str | None:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return None
+    return rel.parts[0] if len(rel.parts) > 1 else None
 
 
 def _samples_from_fastq_dir(
@@ -76,13 +97,15 @@ def _samples_from_fastq_dir(
     )
     samples: list[Sample] = []
 
-    for (sample, chunk), reads in sorted(
-        grouped.items(), key=lambda x: (x[0][0], x[0][1])
+    for (project, sample, chunk), reads in sorted(
+        grouped.items(), key=lambda x: (x[0][0] or "", x[0][1], x[0][2])
     ):
         if "R1" not in reads:
             # skip incomplete units
             continue
-        samples.append(Sample(name=sample, r1=reads["R1"], r2=reads.get("R2")))
+        samples.append(
+            Sample(name=sample, r1=reads["R1"], r2=reads.get("R2"), project=project)
+        )
 
     return samples
 
@@ -91,7 +114,8 @@ def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
     with path.open("w") as f:
         for sample in samples:
             r2 = str(sample.r2) if sample.r2 is not None else ""
-            f.write(f"{sample.name}\t{sample.r1}\t{r2}\n")
+            project = sample.project or ""
+            f.write(f"{sample.name}\t{sample.r1}\t{r2}\t{project}\n")
 
 
 def _resolve_bcl_convert_binary() -> str:

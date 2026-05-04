@@ -8,7 +8,11 @@ from prefect import flow, get_run_logger
 from prefect.task_runners import ThreadPoolTaskRunner
 
 from demux_pipeline.models import Sample
-from demux_pipeline.qc import run_multiqc, submit_qc_tasks
+from demux_pipeline.qc import (
+    _project_names_from_demux_output,
+    run_multiqc,
+    submit_qc_tasks,
+)
 from demux_pipeline.contamination import submit_contamination_tasks
 from demux_pipeline.demux import (
     BCL_CONVERT_OUTDIR_NAME,
@@ -99,19 +103,44 @@ def write_output_contract(
     artifact_path: Path,
 ) -> Path:
     qc_dir = next(
-        (str(p) for p in (outdir / "falco", outdir / "fastqc", outdir / "fastp") if p.exists()),
+        (
+            str(p)
+            for p in (outdir / "falco", outdir / "fastqc", outdir / "fastp")
+            if p.exists()
+        ),
         None,
     )
     contamination_dir = outdir / "contamination"
     multiqc_report = outdir / "multiqc" / "multiqc_report.html"
+    project_qc_dirs = {
+        project: str(qc_dir)
+        for project in _project_names_from_demux_output(outdir)
+        for qc_dir in [outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc"]
+        if qc_dir.exists()
+    }
+    project_multiqc_reports = {
+        project: str(report)
+        for project in _project_names_from_demux_output(outdir)
+        for report in [
+            outdir
+            / BCL_CONVERT_OUTDIR_NAME
+            / project
+            / "qc"
+            / "multiqc"
+            / "multiqc_report.html"
+        ]
+        if report.exists()
+    }
     summaries = sorted((outdir / ".pipeline").glob("*/run_summary.json"))
     payload = {
         "outdir": str(outdir),
         "outputs": {
             "samples_tsv": str(outdir / "samples.tsv"),
             "qc_dir": qc_dir,
+            "project_qc_dirs": project_qc_dirs,
             "contamination_dir": str(contamination_dir) if contamination_dir.exists() else None,
             "multiqc_report": str(multiqc_report) if multiqc_report.exists() else None,
+            "project_multiqc_reports": project_multiqc_reports,
             "run_summary": str(summaries[-1]) if summaries else None,
         },
     }

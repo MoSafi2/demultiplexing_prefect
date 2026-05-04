@@ -142,7 +142,22 @@ All outputs go under `--outdir`:
 - `outdir/contamination/` for optional contamination outputs
 - `outdir/multiqc/` for MultiQC summaries
 
-The pipeline also writes `outdir/samples.tsv` after demultiplexing and sample discovery.
+When `Sample_Project` is present, bcl-convert writes FASTQs under
+`outdir/output/<Sample_Project>/`. The pipeline writes QC under the same project
+folder:
+
+- `outdir/output/<Sample_Project>/*.fastq.gz`
+- `outdir/output/<Sample_Project>/qc/fastqc/`
+- `outdir/output/<Sample_Project>/qc/fastp/`
+- `outdir/output/<Sample_Project>/qc/fastp_passthrough/`
+- `outdir/output/<Sample_Project>/qc/falco/<sample>_<R1|R2>/`
+- `outdir/output/<Sample_Project>/qc/multiqc/multiqc_report.html`
+
+The global `outdir/multiqc/multiqc_report.html` is still written across all projects.
+The pipeline also writes `outdir/samples.tsv` after demultiplexing and sample
+discovery with columns `sample`, `r1`, `r2`, and `project`.
+When `--output-contract-file` is used, per-project MultiQC reports are exported in
+the `project_multiqc_reports` map.
 
 ## Linkar integration advice
 

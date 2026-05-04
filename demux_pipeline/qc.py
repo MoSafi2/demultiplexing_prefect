@@ -98,7 +98,7 @@ def run_multiqc(
     for project in project_names:
         project_inputs = [
             str(tool_root)
-            for tool in ("fastqc", "fastp", "falco")
+            for tool in ("fastqc", "fastp", "falco", "contamination")
             for tool_root in [
                 outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc" / tool
             ]

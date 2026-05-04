@@ -112,15 +112,24 @@ def write_output_contract(
     )
     contamination_dir = outdir / "contamination"
     multiqc_report = outdir / "multiqc" / "multiqc_report.html"
+    project_names = _project_names_from_demux_output(outdir)
     project_qc_dirs = {
         project: str(qc_dir)
-        for project in _project_names_from_demux_output(outdir)
+        for project in project_names
         for qc_dir in [outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc"]
         if qc_dir.exists()
     }
+    project_contamination_dirs = {
+        project: str(contam_dir)
+        for project in project_names
+        for contam_dir in [
+            outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc" / "contamination"
+        ]
+        if contam_dir.exists()
+    }
     project_multiqc_reports = {
         project: str(report)
-        for project in _project_names_from_demux_output(outdir)
+        for project in project_names
         for report in [
             outdir
             / BCL_CONVERT_OUTDIR_NAME
@@ -139,6 +148,7 @@ def write_output_contract(
             "qc_dir": qc_dir,
             "project_qc_dirs": project_qc_dirs,
             "contamination_dir": str(contamination_dir) if contamination_dir.exists() else None,
+            "project_contamination_dirs": project_contamination_dirs,
             "multiqc_report": str(multiqc_report) if multiqc_report.exists() else None,
             "project_multiqc_reports": project_multiqc_reports,
             "run_summary": str(summaries[-1]) if summaries else None,

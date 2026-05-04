@@ -6,12 +6,19 @@ from typing import Literal
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from prefect.futures import PrefectFutureList
+from demux_pipeline.demux import BCL_CONVERT_OUTDIR_NAME
 from demux_pipeline.models import Sample
 from demux_pipeline.process import require_executable, run_command
 from demux_pipeline.observability import record_asset
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _sample_contamination_root(outdir: Path, sample: Sample) -> Path:
+    if not sample.project:
+        return outdir / "contamination"
+    return outdir / BCL_CONVERT_OUTDIR_NAME / sample.project / "qc" / "contamination"
 
 
 def _bowtie2_index_exists(index_prefix: Path) -> bool:
@@ -106,7 +113,7 @@ def _run_kraken2_impl(
     logger = get_run_logger()
     require_executable("kraken2")
 
-    root = outdir / "contamination" / "kraken"
+    root = _sample_contamination_root(outdir, sample) / "kraken"
     sample_dir = root / sample.name
     _ensure_dir(sample_dir)
 
@@ -143,6 +150,7 @@ def _run_kraken2_impl(
 
     return {
         "sample": sample.name,
+        "project": sample.project,
         "report": str(report_path),
         "output": str(output_path),
     }
@@ -162,7 +170,7 @@ def _run_bracken_impl(
     sample_name = kraken_result["sample"]
     kraken_report = Path(kraken_result["report"])
 
-    root = outdir / "contamination" / "bracken"
+    root = kraken_report.parent.parent.parent / "bracken"
     sample_dir = root / sample_name
     _ensure_dir(sample_dir)
 
@@ -231,7 +239,7 @@ def run_fastq_screen(
     logger = get_run_logger()
     require_executable("fastq_screen")
 
-    root = outdir / "contamination" / "fastq_screen"
+    root = _sample_contamination_root(outdir, sample) / "fastq_screen"
     sample_dir = root / sample.name
     _ensure_dir(sample_dir)
 
@@ -335,5 +343,4 @@ def submit_contamination_tasks(
         )
     else:
         raise SystemExit(f"Unknown contamination tool: {contamination_tool}")
-
 

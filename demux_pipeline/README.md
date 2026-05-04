@@ -31,11 +31,13 @@ When `Sample_Project` is present, bcl-convert writes FASTQs under
 project folder: `outdir/output/<Sample_Project>/qc/fastqc/`,
 `outdir/output/<Sample_Project>/qc/fastp/`,
 `outdir/output/<Sample_Project>/qc/fastp_passthrough/`,
-`outdir/output/<Sample_Project>/qc/falco/<sample>_<R1|R2>/`, and
+`outdir/output/<Sample_Project>/qc/falco/<sample>_<R1|R2>/`,
+`outdir/output/<Sample_Project>/qc/contamination/`, and
 `outdir/output/<Sample_Project>/qc/multiqc/multiqc_report.html`.
 MultiQC keeps the global report at `outdir/multiqc/multiqc_report.html`.
-When `--output-contract-file` is used, per-project MultiQC reports are exported in
-the `project_multiqc_reports` map.
+When `--output-contract-file` is used, per-project QC, contamination, and MultiQC
+paths are exported in `project_qc_dirs`, `project_contamination_dirs`, and
+`project_multiqc_reports`.
 
 ## Usage
 

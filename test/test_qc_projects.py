@@ -48,11 +48,15 @@ def test_output_contract_exports_project_multiqc_reports(tmp_path: Path) -> None
     report = _touch(
         outdir / "output" / "project-a" / "qc" / "multiqc" / "multiqc_report.html"
     )
+    qc_dir = outdir / "output" / "project-a" / "qc"
     contract = tmp_path / "contract.json"
 
     write_output_contract(outdir=outdir, artifact_path=contract)
 
     payload = json.loads(contract.read_text(encoding="utf-8"))
+    assert payload["outputs"]["project_qc_dirs"] == {
+        "project-a": str(qc_dir)
+    }
     assert payload["outputs"]["project_multiqc_reports"] == {
         "project-a": str(report)
     }

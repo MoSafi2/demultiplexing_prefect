@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Iterable, List
+import subprocess
 
 from prefect import flow, get_run_logger
 from prefect.task_runners import ThreadPoolTaskRunner
@@ -81,6 +82,43 @@ def _write_discovered_manifest(samples: list[Sample], outdir: Path) -> Path:
     manifest_path = outdir / "samples.tsv"
     _write_samples_tsv(samples, manifest_path)
     return manifest_path
+
+
+def _get_projects_samples(samples: list[Sample]) -> dict[Path, list[Path]]:
+    pp = list(set([x.r1.parent for x in samples]))
+    pp = {p: [] for p in pp}
+    for sample in samples:
+        if sample.r1:
+            pp[sample.r1.parent].append(sample.r1)
+        if sample.r2:
+            pp[sample.r2.parent].append(sample.r2)
+    return pp
+
+
+def _hash_paths(paths: list[Path]) -> list[str]:
+    paths = [Path(p) for p in paths]
+
+    result = subprocess.run(
+        ["md5sum", "--binary", *map(str, paths)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    lines = []
+    for line, path in zip(result.stdout.splitlines(), paths):
+        digest = line.split()[0]
+        lines.append(f"{digest}  {path.name}")
+
+    return lines
+
+
+def write_sample_hashes(samples: list[Sample]):
+    samples_dict = _get_projects_samples(samples)
+    for path, project_samples in samples_dict.items():
+        hashes = _hash_paths(project_samples)
+        with open(path/"md5.txt", "w") as f:
+            f.write("\n".join(hashes))
 
 
 def _resolve_run_name(
@@ -220,6 +258,9 @@ def demux_pipeline(
             raise SystemExit("No samples found.")
         samples_manifest = _write_discovered_manifest(samples, outdir_path)
         logger.info("samples manifest written to %s", samples_manifest)
+        
+        # Hash Fastq files, and write hashes to project folder
+        write_sample_hashes(samples)
 
         max_workers, per_task_threads = _allocate_sample_parallelism(
             thread_budget, len(samples)

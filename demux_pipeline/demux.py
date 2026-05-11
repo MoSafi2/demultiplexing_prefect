@@ -54,7 +54,7 @@ def _group_fastqs(
         if not parsed:
             continue
         read_key = f"R{parsed['read']}"
-        project = None if has_top_level_fastq else _project_from_fastq_path(root, path)
+        project = _project_from_fastq_path(root, path)
         grouped[project, parsed["sample"], parsed["chunk"]][read_key] = path
     return grouped
 
@@ -189,12 +189,3 @@ def demux_bcl(
         metadata={"source": "bcl-convert --output-directory"},
     )
 
-
-@task(name="write_fastq_manifest")
-def write_fastq_manifest(
-    input_dir: Path, output_path: Path, include_undetermined: bool = False
-) -> None:
-    samples = _samples_from_fastq_dir(
-        input_dir, include_undetermined=include_undetermined
-    )
-    _write_samples_tsv(samples, output_path)

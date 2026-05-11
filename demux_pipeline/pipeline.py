@@ -289,7 +289,7 @@ def demux_pipeline(
                 contam_batches = [
                     submit_contamination_tasks(
                         samples,
-                        tool,
+                        tool, # type: ignore
                         outdir_path,
                         per_task_threads,
                         kraken_db=kraken_db,

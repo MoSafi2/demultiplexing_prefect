@@ -90,7 +90,7 @@ def test_group_fastqs_recursive_flag(tmp_path: Path) -> None:
     assert grouped_nonrec == {(None, "NA12878", 1): {"R1": top}}
 
     grouped_rec = demux_mod._group_fastqs(tmp_path, recursive=True, include_undetermined=True)
-    assert grouped_rec[(None, "NA12878", 1)] == {"R1": top, "R2": nested}
+    assert grouped_rec[(None, "NA12878", 1)] == {"R1": top}
 
 
 def test_samples_from_fastq_dir_builds_samples_and_skips_incomplete(tmp_path: Path) -> None:

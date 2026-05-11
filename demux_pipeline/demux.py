@@ -39,6 +39,9 @@ def _group_fastqs(
 ) -> dict[tuple[str | None, str, int], dict[str, Path]]:
     iterator = root.rglob("*") if recursive else root.glob("*")
     paths = [path for path in iterator if path.is_file()]
+    has_top_level_fastq = any(
+        parse_fastq(path) for path in paths if path.parent == root
+    )
     grouped: dict[tuple[str | None, str, int], dict[str, Path]] = defaultdict(dict)
     for path in paths:
         if _is_under_qc_dir(root, path):
@@ -51,7 +54,7 @@ def _group_fastqs(
         if not parsed:
             continue
         read_key = f"R{parsed['read']}"
-        project = _project_from_fastq_path(root, path)
+        project = None if has_top_level_fastq else _project_from_fastq_path(root, path)
         grouped[project, parsed["sample"], parsed["chunk"]][read_key] = path
     return grouped
 

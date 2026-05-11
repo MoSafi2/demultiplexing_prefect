@@ -54,7 +54,7 @@ def _group_fastqs(
         if not parsed:
             continue
         read_key = f"R{parsed['read']}"
-        project = None if has_top_level_fastq else _project_from_fastq_path(root, path)
+        project = _project_from_fastq_path(root, path)
         grouped[project, parsed["sample"], parsed["chunk"]][read_key] = path
     return grouped
 

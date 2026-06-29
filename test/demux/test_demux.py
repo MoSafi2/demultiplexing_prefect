@@ -259,6 +259,29 @@ def test_normalize_aviti_output_rewrites_samples_tree_into_output_contract(tmp_p
     assert (outdir / "Undetermined_S0_R1_001.fastq.gz").exists()
 
 
+def test_copy_aviti_auxiliary_outputs_preserves_non_fastq_artifacts(tmp_path: Path) -> None:
+    staged = tmp_path / "staged"
+    _touch(staged / "Metrics.csv")
+    _touch(staged / "RunStats.json")
+    _touch(staged / "info" / "Bases2Fastq.log")
+    _touch(staged / "Samples" / "project-a" / "project-a_Metrics.csv")
+    _touch(staged / "Samples" / "project-a" / "sampleA_R1.fastq.gz")
+    _touch(staged / "Samples" / "Unassigned" / "Unassigned_R2.fastq.gz")
+
+    dest = tmp_path / "out" / demux_mod.AVITI_AUX_OUTDIR_NAME
+    demux_mod.copy_aviti_auxiliary_outputs(
+        staged_output=staged,
+        destination_root=dest,
+    )
+
+    assert (dest / "Metrics.csv").exists()
+    assert (dest / "RunStats.json").exists()
+    assert (dest / "info" / "Bases2Fastq.log").exists()
+    assert (dest / "Samples" / "project-a" / "project-a_Metrics.csv").exists()
+    assert not (dest / "Samples" / "project-a" / "sampleA_R1.fastq.gz").exists()
+    assert not (dest / "Samples" / "Unassigned" / "Unassigned_R2.fastq.gz").exists()
+
+
 def test_demux_bcl_constructs_aviti_command(tmp_path: Path) -> None:
     input_dir = tmp_path / "run"
     input_dir.mkdir()

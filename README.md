@@ -130,6 +130,7 @@ pixi run demux-pipeline \
 
 When invoked with `--output-contract-file`, the CLI writes a JSON document with:
 
+- `aviti_auxiliary_dir`
 - `samples_tsv`
 - `qc_dir`
 - `contamination_dir`
@@ -182,7 +183,8 @@ paths are exported in `project_qc_dirs`, `project_contamination_dirs`, and
 `project_multiqc_reports`.
 For AVITI runs, native `bases2fastq` artifacts are preserved under
 `outdir/.demux_native/bases2fastq/`, while downstream steps consume the normalized
-`outdir/output/` layout.
+`outdir/output/` layout. Non-FASTQ `bases2fastq` artifacts such as metrics, logs,
+run stats, and project summaries are also copied to `outdir/bases2fastq/`.
 
 ## Linkar integration advice
 

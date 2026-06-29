@@ -16,6 +16,7 @@ from demux_pipeline.qc import (
 )
 from demux_pipeline.contamination import submit_contamination_tasks
 from demux_pipeline.demux import (
+    AVITI_AUX_OUTDIR_NAME,
     DEMUX_FASTQ_OUTDIR_NAME,
     _samples_from_fastq_dir,
     _write_samples_tsv,
@@ -182,6 +183,11 @@ def write_output_contract(
     payload = {
         "outdir": str(outdir),
         "outputs": {
+            "aviti_auxiliary_dir": (
+                str(outdir / AVITI_AUX_OUTDIR_NAME)
+                if (outdir / AVITI_AUX_OUTDIR_NAME).exists()
+                else None
+            ),
             "samples_tsv": str(outdir / "samples.tsv"),
             "qc_dir": qc_dir,
             "project_qc_dirs": project_qc_dirs,

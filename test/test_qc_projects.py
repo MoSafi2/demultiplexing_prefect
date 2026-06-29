@@ -45,6 +45,8 @@ def test_project_names_from_demux_output_uses_fastq_project_dirs(tmp_path: Path)
 def test_output_contract_exports_project_multiqc_reports(tmp_path: Path) -> None:
     outdir = tmp_path / "out"
     _touch(outdir / "output" / "project-a" / "s1_S1_R1_001.fastq.gz")
+    aviti_aux_dir = outdir / "bases2fastq"
+    aviti_aux_dir.mkdir(parents=True)
     report = _touch(
         outdir / "output" / "project-a" / "qc" / "multiqc" / "multiqc_report.html"
     )
@@ -56,6 +58,7 @@ def test_output_contract_exports_project_multiqc_reports(tmp_path: Path) -> None
     write_output_contract(outdir=outdir, artifact_path=contract)
 
     payload = json.loads(contract.read_text(encoding="utf-8"))
+    assert payload["outputs"]["aviti_auxiliary_dir"] == str(aviti_aux_dir)
     assert payload["outputs"]["project_qc_dirs"] == {
         "project-a": str(qc_dir)
     }

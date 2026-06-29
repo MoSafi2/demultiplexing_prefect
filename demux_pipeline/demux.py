@@ -16,6 +16,7 @@ from demux_pipeline.observability import record_asset
 
 DEMUX_FASTQ_OUTDIR_NAME = "output"
 AVITI_NATIVE_OUTDIR = Path(".demux_native") / "bases2fastq"
+AVITI_AUX_OUTDIR_NAME = "bases2fastq"
 AVITI_SAMPLES_DIR_NAME = "Samples"
 
 ILLUMINA_SAMPLE_ID_KEYS = ("sample_id", "sampleid", "sample_name", "samplename")
@@ -367,6 +368,32 @@ def _normalize_undetermined_fastqs(
             _link_or_copy(src, dest)
 
 
+def _is_fastq_artifact(path: Path) -> bool:
+    name = path.name.lower()
+    return (
+        name.endswith(".fastq")
+        or name.endswith(".fq")
+        or name.endswith(".fastq.gz")
+        or name.endswith(".fq.gz")
+    )
+
+
+def copy_aviti_auxiliary_outputs(
+    *,
+    staged_output: Path,
+    destination_root: Path,
+) -> None:
+    if destination_root.exists():
+        shutil.rmtree(destination_root)
+    destination_root.mkdir(parents=True, exist_ok=True)
+
+    for src in sorted(staged_output.rglob("*")):
+        if not src.is_file() or _is_fastq_artifact(src):
+            continue
+        dest = destination_root / src.relative_to(staged_output)
+        _link_or_copy(src, dest)
+
+
 def normalize_aviti_output(
     *,
     staged_output: Path,
@@ -495,6 +522,7 @@ def demux_bcl(
     if platform_name == "aviti":
         _validate_aviti_input_dir(input_dir)
         native_root = outdir / AVITI_NATIVE_OUTDIR
+        aux_output = outdir / AVITI_AUX_OUTDIR_NAME
         native_root.parent.mkdir(parents=True, exist_ok=True)
         if native_root.exists():
             shutil.rmtree(native_root)
@@ -516,6 +544,17 @@ def demux_bcl(
             tool="bases2fastq",
             kind="directory",
             metadata={"source": "bases2fastq native output"},
+        )
+        copy_aviti_auxiliary_outputs(
+            staged_output=native_root,
+            destination_root=aux_output,
+        )
+        record_asset(
+            aux_output,
+            step="demux",
+            tool="bases2fastq",
+            kind="directory",
+            metadata={"source": "bases2fastq auxiliary outputs"},
         )
         normalize_aviti_output(
             staged_output=native_root,

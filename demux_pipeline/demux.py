@@ -6,7 +6,6 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from demux_pipeline.models import Sample
@@ -352,22 +351,6 @@ def _link_or_copy(src: Path, dest: Path) -> None:
         shutil.copy2(src, dest)
 
 
-def _normalize_undetermined_fastqs(
-    *,
-    demux_output: Path,
-    unassigned_paths: Iterable[Path],
-) -> None:
-    grouped: dict[int, list[Path]] = defaultdict(list)
-    for path in unassigned_paths:
-        read, _chunk = _guess_native_fastq_read(path)
-        if read in (1, 2):
-            grouped[read].append(path)
-    for read, paths in grouped.items():
-        for chunk_index, src in enumerate(sorted(paths), start=1):
-            dest = demux_output / f"Undetermined_S0_R{read}_{chunk_index:03d}.fastq.gz"
-            _link_or_copy(src, dest)
-
-
 def _is_fastq_artifact(path: Path) -> bool:
     name = path.name.lower()
     return (
@@ -394,23 +377,20 @@ def copy_aviti_auxiliary_outputs(
         _link_or_copy(src, dest)
 
 
-def normalize_aviti_output(
+def _planned_normalized_aviti_fastqs(
     *,
     staged_output: Path,
-    demux_output: Path,
     manifest_path: Path,
-) -> None:
+) -> dict[Path, Path]:
     samples_root = staged_output / AVITI_SAMPLES_DIR_NAME
     if not samples_root.is_dir():
         raise RuntimeError(
             f"Bases2Fastq output is missing the expected {AVITI_SAMPLES_DIR_NAME}/ directory: {samples_root}"
         )
-    if demux_output.exists():
-        shutil.rmtree(demux_output)
-    demux_output.mkdir(parents=True, exist_ok=True)
 
     manifest_ordinals = _sample_ordinals_from_manifest(manifest_path)
     fallback_next = max(manifest_ordinals.values(), default=0) + 1
+    planned: dict[Path, Path] = {}
     unassigned_paths: list[Path] = []
 
     for group in _group_native_aviti_fastqs(samples_root):
@@ -433,7 +413,7 @@ def normalize_aviti_output(
             manifest_ordinals[key] = ordinal
             fallback_next += 1
 
-        sample_dir = demux_output / group.project if group.project else demux_output
+        sample_prefix = Path(group.project) if group.project else Path()
         normalized_name = _safe_fastq_name(sample_name)
         max_chunks = max((len(paths) for paths in group.reads.values()), default=0)
         for chunk_index in range(max_chunks):
@@ -441,15 +421,118 @@ def normalize_aviti_output(
                 paths = group.reads.get(read, [])
                 if chunk_index >= len(paths):
                     continue
-                dest = sample_dir / (
+                rel_dest = sample_prefix / (
                     f"{normalized_name}_S{ordinal}_R{read}_{chunk_index + 1:03d}.fastq.gz"
                 )
-                _link_or_copy(paths[chunk_index], dest)
+                planned[rel_dest] = paths[chunk_index]
 
-    _normalize_undetermined_fastqs(
-        demux_output=demux_output,
-        unassigned_paths=unassigned_paths,
+    grouped_unassigned: dict[int, list[Path]] = defaultdict(list)
+    for path in unassigned_paths:
+        read, _chunk = _guess_native_fastq_read(path)
+        if read in (1, 2):
+            grouped_unassigned[read].append(path)
+    for read, paths in grouped_unassigned.items():
+        for chunk_index, src in enumerate(sorted(paths), start=1):
+            rel_dest = Path(f"Undetermined_S0_R{read}_{chunk_index:03d}.fastq.gz")
+            planned[rel_dest] = src
+
+    return planned
+
+
+def verify_aviti_outputs(
+    *,
+    staged_output: Path,
+    demux_output: Path,
+    aux_output: Path,
+    manifest_path: Path,
+) -> None:
+    expected_fastqs = _planned_normalized_aviti_fastqs(
+        staged_output=staged_output,
+        manifest_path=manifest_path,
     )
+    actual_fastqs = {
+        path.relative_to(demux_output): path
+        for path in demux_output.rglob("*")
+        if path.is_file() and _is_fastq_artifact(path)
+    }
+    if set(actual_fastqs) != set(expected_fastqs):
+        missing = sorted(str(path) for path in set(expected_fastqs) - set(actual_fastqs))
+        extra = sorted(str(path) for path in set(actual_fastqs) - set(expected_fastqs))
+        raise RuntimeError(
+            "AVITI normalized FASTQ verification failed. "
+            f"Missing: {missing or 'none'}. Extra: {extra or 'none'}."
+        )
+    for rel_path, src in expected_fastqs.items():
+        dest = actual_fastqs[rel_path]
+        if dest.stat().st_size != src.stat().st_size:
+            raise RuntimeError(
+                f"AVITI normalized FASTQ size mismatch for {rel_path}: {dest.stat().st_size} != {src.stat().st_size}"
+            )
+
+    expected_aux = {
+        path.relative_to(staged_output): path
+        for path in staged_output.rglob("*")
+        if path.is_file() and not _is_fastq_artifact(path)
+    }
+    actual_aux = {
+        path.relative_to(aux_output): path
+        for path in aux_output.rglob("*")
+        if path.is_file()
+    }
+    if set(actual_aux) != set(expected_aux):
+        missing = sorted(str(path) for path in set(expected_aux) - set(actual_aux))
+        extra = sorted(str(path) for path in set(actual_aux) - set(expected_aux))
+        raise RuntimeError(
+            "AVITI auxiliary artifact verification failed. "
+            f"Missing: {missing or 'none'}. Extra: {extra or 'none'}."
+        )
+    for rel_path, src in expected_aux.items():
+        dest = actual_aux[rel_path]
+        if dest.stat().st_size != src.stat().st_size:
+            raise RuntimeError(
+                f"AVITI auxiliary artifact size mismatch for {rel_path}: {dest.stat().st_size} != {src.stat().st_size}"
+            )
+
+
+def normalize_aviti_output(
+    *,
+    staged_output: Path,
+    demux_output: Path,
+    manifest_path: Path,
+) -> None:
+    if demux_output.exists():
+        shutil.rmtree(demux_output)
+    demux_output.mkdir(parents=True, exist_ok=True)
+    for rel_dest, src in _planned_normalized_aviti_fastqs(
+        staged_output=staged_output,
+        manifest_path=manifest_path,
+    ).items():
+        _link_or_copy(src, demux_output / rel_dest)
+
+
+def finalize_aviti_outputs(
+    *,
+    staged_output: Path,
+    demux_output: Path,
+    aux_output: Path,
+    manifest_path: Path,
+) -> None:
+    copy_aviti_auxiliary_outputs(
+        staged_output=staged_output,
+        destination_root=aux_output,
+    )
+    normalize_aviti_output(
+        staged_output=staged_output,
+        demux_output=demux_output,
+        manifest_path=manifest_path,
+    )
+    verify_aviti_outputs(
+        staged_output=staged_output,
+        demux_output=demux_output,
+        aux_output=aux_output,
+        manifest_path=manifest_path,
+    )
+    shutil.rmtree(staged_output.parent)
 
 
 def _validate_aviti_input_dir(input_dir: Path) -> None:
@@ -545,9 +628,11 @@ def demux_bcl(
             kind="directory",
             metadata={"source": "bases2fastq native output"},
         )
-        copy_aviti_auxiliary_outputs(
+        finalize_aviti_outputs(
             staged_output=native_root,
-            destination_root=aux_output,
+            demux_output=demux_output,
+            aux_output=aux_output,
+            manifest_path=samplesheet,
         )
         record_asset(
             aux_output,
@@ -555,11 +640,6 @@ def demux_bcl(
             tool="bases2fastq",
             kind="directory",
             metadata={"source": "bases2fastq auxiliary outputs"},
-        )
-        normalize_aviti_output(
-            staged_output=native_root,
-            demux_output=demux_output,
-            manifest_path=samplesheet,
         )
         record_asset(
             demux_output,

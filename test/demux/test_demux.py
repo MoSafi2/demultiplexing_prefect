@@ -282,6 +282,41 @@ def test_copy_aviti_auxiliary_outputs_preserves_non_fastq_artifacts(tmp_path: Pa
     assert not (dest / "Samples" / "Unassigned" / "Unassigned_R2.fastq.gz").exists()
 
 
+def test_finalize_aviti_outputs_verifies_and_removes_staging(tmp_path: Path) -> None:
+    staged = tmp_path / ".demux_native" / "bases2fastq"
+    samples_root = staged / "Samples"
+    _touch(samples_root / "project-a" / "sampleA" / "sampleA_R1.fastq.gz")
+    _touch(samples_root / "project-a" / "sampleA" / "sampleA_R2.fastq.gz")
+    _touch(samples_root / "Unassigned" / "Unassigned_R1.fastq.gz")
+    _touch(samples_root / "Unassigned" / "Unassigned_R2.fastq.gz")
+    _touch(staged / "Metrics.csv")
+    _touch(staged / "info" / "Bases2Fastq.log")
+
+    manifest = tmp_path / "RunManifest.csv"
+    manifest.write_text(
+        "[Samples]\n"
+        "SampleName,Project\n"
+        "sampleA,project-a\n",
+        encoding="utf-8",
+    )
+
+    demux_output = tmp_path / "out" / demux_mod.DEMUX_FASTQ_OUTDIR_NAME
+    aux_output = tmp_path / "out" / demux_mod.AVITI_AUX_OUTDIR_NAME
+    demux_mod.finalize_aviti_outputs(
+        staged_output=staged,
+        demux_output=demux_output,
+        aux_output=aux_output,
+        manifest_path=manifest,
+    )
+
+    assert (demux_output / "project-a" / "sampleA_S1_R1_001.fastq.gz").exists()
+    assert (demux_output / "project-a" / "sampleA_S1_R2_001.fastq.gz").exists()
+    assert (demux_output / "Undetermined_S0_R1_001.fastq.gz").exists()
+    assert (aux_output / "Metrics.csv").exists()
+    assert (aux_output / "info" / "Bases2Fastq.log").exists()
+    assert not staged.parent.exists()
+
+
 def test_demux_bcl_constructs_aviti_command(tmp_path: Path) -> None:
     input_dir = tmp_path / "run"
     input_dir.mkdir()
@@ -300,7 +335,7 @@ def test_demux_bcl_constructs_aviti_command(tmp_path: Path) -> None:
     ), patch.object(demux_mod, "run_command", side_effect=_fake_run), patch.object(
         demux_mod, "record_asset"
     ), patch.object(
-        demux_mod, "normalize_aviti_output"
+        demux_mod, "finalize_aviti_outputs"
     ):
         demux_mod.demux_bcl.fn(
             input_dir=input_dir,

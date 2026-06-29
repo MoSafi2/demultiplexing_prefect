@@ -181,10 +181,12 @@ discovery with columns `sample`, `r1`, `r2`, and `project`.
 When `--output-contract-file` is used, per-project QC, contamination, and MultiQC
 paths are exported in `project_qc_dirs`, `project_contamination_dirs`, and
 `project_multiqc_reports`.
-For AVITI runs, native `bases2fastq` artifacts are preserved under
-`outdir/.demux_native/bases2fastq/`, while downstream steps consume the normalized
-`outdir/output/` layout. Non-FASTQ `bases2fastq` artifacts such as metrics, logs,
-run stats, and project summaries are also copied to `outdir/bases2fastq/`.
+For AVITI runs, the pipeline stages native `bases2fastq` output under
+`outdir/.demux_native/bases2fastq/`, verifies that normalization and auxiliary
+artifact copying succeeded, and then removes the staging directory to conserve disk
+space. The final retained outputs are the normalized `outdir/output/` layout plus
+non-FASTQ `bases2fastq` artifacts such as metrics, logs, run stats, and project
+summaries under `outdir/bases2fastq/`.
 
 ## Linkar integration advice
 

@@ -179,25 +179,60 @@ def _normalize_manifest_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
-def _manifest_header_index(lines: list[str]) -> int:
-    for i, line in enumerate(lines):
+SECTION_HEADER_RE = re.compile(r"^\[(?P<name>[^\]]+)\]\s*(?:,.*)?$")
+
+
+def _manifest_section_name(line: str) -> str | None:
+    match = SECTION_HEADER_RE.match(line.strip())
+    if not match:
+        return None
+    return _normalize_manifest_key(match.group("name"))
+
+
+def _manifest_section_rows(lines: list[str], *section_names: str) -> list[str] | None:
+    target_names = {_normalize_manifest_key(name) for name in section_names}
+    collecting = False
+    matched_target = False
+    rows: list[str] = []
+
+    for line in lines:
         stripped = line.strip()
-        if stripped.lower() == "[data]":
-            return i + 1
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or stripped.startswith("["):
+        section_name = _manifest_section_name(stripped)
+        if section_name is not None:
+            if collecting:
+                break
+            collecting = section_name in target_names
+            if collecting:
+                matched_target = True
             continue
-        return i
-    raise RuntimeError("No manifest header found.")
+        if not stripped or stripped.startswith("#"):
+            continue
+        if collecting:
+            rows.append(line)
+
+    if matched_target:
+        return rows
+    return None
+
+
+def _manifest_fallback_rows(lines: list[str]) -> list[str]:
+    rows: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or _manifest_section_name(stripped):
+            continue
+        rows.append(line)
+    return rows
 
 
 def _read_manifest_entries(manifest_path: Path) -> list[ManifestSampleEntry]:
     lines = manifest_path.read_text(encoding="utf-8", errors="replace").splitlines()
     if not lines:
         return []
-    header_index = _manifest_header_index(lines)
-    csv_text = "\n".join(lines[header_index:]).strip()
+    csv_rows = _manifest_section_rows(lines, "Samples", "Data")
+    if csv_rows is None:
+        csv_rows = _manifest_fallback_rows(lines)
+    csv_text = "\n".join(csv_rows).strip()
     if not csv_text:
         return []
     reader = csv.DictReader(csv_text.splitlines())

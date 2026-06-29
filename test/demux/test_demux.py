@@ -172,6 +172,64 @@ def test_sample_ordinals_from_manifest_handles_illumina_data_section(tmp_path: P
     }
 
 
+def test_sample_ordinals_from_manifest_handles_aviti_samples_section(tmp_path: Path) -> None:
+    manifest = tmp_path / "RunManifest.csv"
+    manifest.write_text(
+        "# comments before sections are allowed\n"
+        "[Settings],,\n"
+        "SettingName,Value,Lane\n"
+        "SpikeInAsUnassigned,FALSE\n"
+        "\n"
+        "[Samples],,,\n"
+        "SampleName,Index1,Index2,Lane,Project,ExternalId\n"
+        "sample_0,ACGTGTAGC,GCTAGTGCA,\n"
+        "sample_1,CACATGCTG,AGACACTGT,,project-b,external-1\n"
+        "\n"
+        "[RunValues]\n"
+        "RunValueName,Value,Lane\n"
+        "OverrideCycles,Y151;I10;I10;Y151,\n",
+        encoding="utf-8",
+    )
+
+    assert demux_mod._sample_ordinals_from_manifest(manifest) == {
+        (None, "sample_0"): 1,
+        ("project-b", "sample_1"): 2,
+    }
+
+
+def test_sample_ordinals_from_manifest_stops_at_next_section(tmp_path: Path) -> None:
+    manifest = tmp_path / "RunManifest.csv"
+    manifest.write_text(
+        "[Samples]\n"
+        "SampleName,Project\n"
+        "sample_a,\n"
+        "[Settings]\n"
+        "SettingName,Value\n"
+        "SampleName,not-a-real-sample\n",
+        encoding="utf-8",
+    )
+
+    assert demux_mod._sample_ordinals_from_manifest(manifest) == {
+        (None, "sample_a"): 1,
+    }
+
+
+def test_sample_ordinals_from_manifest_respects_explicit_empty_samples_section(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "RunManifest.csv"
+    manifest.write_text(
+        "[Samples]\n"
+        "\n"
+        "[Settings]\n"
+        "SettingName,Value\n"
+        "SampleName,not-a-real-sample\n",
+        encoding="utf-8",
+    )
+
+    assert demux_mod._sample_ordinals_from_manifest(manifest) == {}
+
+
 def test_normalize_aviti_output_rewrites_samples_tree_into_output_contract(tmp_path: Path) -> None:
     staged = tmp_path / "staged"
     samples_root = staged / "Samples"

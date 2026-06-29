@@ -20,7 +20,6 @@ def test_pixi_exposes_cli_task() -> None:
 
 def test_generic_runner_uses_cli_entrypoint() -> None:
     text = (REPO_ROOT / "run.sh").read_text(encoding="utf-8")
-    assert "require_cmd bcl-convert" in text
     assert "require_cmd pixi" in text
     assert 'declare -a CMD=(pixi run demux-pipeline "$@")' in text
     assert 'CMD+=(--output-contract-file "$OUTPUT_CONTRACT_FILE")' in text

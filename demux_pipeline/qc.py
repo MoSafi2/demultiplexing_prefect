@@ -10,7 +10,7 @@ from prefect.futures import PrefectFutureList
 # Lets MultiQC pick up Bracken `-w` reports (see multiqc_config.yaml).
 MULTIQC_PROJECT_CONFIG = Path(__file__).resolve().parent / "multiqc_config.yaml"
 
-from demux_pipeline.demux import BCL_CONVERT_OUTDIR_NAME, parse_fastq
+from demux_pipeline.demux import DEMUX_FASTQ_OUTDIR_NAME, parse_fastq
 from demux_pipeline.models import Sample
 from demux_pipeline.process import run_command
 from demux_pipeline.observability import record_asset
@@ -22,11 +22,11 @@ def _ensure_dir(path: Path) -> None:
 def _sample_project_dir(root: Path, sample: Sample) -> Path:
     if not sample.project:
         return root
-    return root.parent / BCL_CONVERT_OUTDIR_NAME / sample.project / "qc" / root.name
+    return root.parent / DEMUX_FASTQ_OUTDIR_NAME / sample.project / "qc" / root.name
 
 
 def _project_names_from_demux_output(outdir: Path) -> list[str]:
-    demux_root = outdir / BCL_CONVERT_OUTDIR_NAME
+    demux_root = outdir / DEMUX_FASTQ_OUTDIR_NAME
     if not demux_root.exists():
         return []
     projects = []
@@ -66,7 +66,7 @@ def run_multiqc(
     # Feed multiqc only directories that exist to avoid errors.
     # (multiqc can still detect supported modules under these.)
     candidate_dirs = [
-        outdir / BCL_CONVERT_OUTDIR_NAME,
+        outdir / DEMUX_FASTQ_OUTDIR_NAME,
         outdir / "fastqc",
         outdir / "fastp",
         outdir / "falco",
@@ -99,14 +99,12 @@ def run_multiqc(
         project_inputs = [
             str(tool_root)
             for tool in ("fastqc", "fastp", "falco", "contamination")
-            for tool_root in [
-                outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc" / tool
-            ]
+            for tool_root in [outdir / DEMUX_FASTQ_OUTDIR_NAME / project / "qc" / tool]
             if tool_root.exists()
         ]
         if not project_inputs:
             continue
-        project_out = outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc" / "multiqc"
+        project_out = outdir / DEMUX_FASTQ_OUTDIR_NAME / project / "qc" / "multiqc"
         if project_out.exists():
             shutil.rmtree(project_out)
         _ensure_dir(project_out)

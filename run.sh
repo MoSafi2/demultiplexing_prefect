@@ -11,7 +11,6 @@ require_cmd() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-require_cmd bcl-convert
 require_cmd pixi
 
 declare -a CMD=(pixi run demux-pipeline "$@")

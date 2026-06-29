@@ -12,13 +12,14 @@ pixi install
 
 System tools must be on your `PATH` (depending on what you run):
 
-* `bcl-convert` (required)
+* `bcl-convert` for Illumina demultiplexing
+* `bases2fastq` for AVITI demultiplexing
 
 ## Output directories
 
 All outputs go under `--outdir`:
 
-* `outdir/output/` (bcl-convert output directory)
+* `outdir/output/` (normalized demultiplexed FASTQ directory)
 * `outdir/fastqc/` (FastQC reports)
 * `outdir/fastp/` (Fastp HTML + JSON)
 * `outdir/fastp_passthrough/` (Fastp FASTQ outputs; this pipeline disables trimming/filtering)
@@ -26,9 +27,9 @@ All outputs go under `--outdir`:
 * `outdir/contamination/` (optional; Kraken/Bracken or FastQ Screen outputs)
 * `outdir/multiqc/` (MultiQC summary; created only if `multiqc` is available on PATH)
 
-When `Sample_Project` is present, bcl-convert writes FASTQs under
-`outdir/output/<Sample_Project>/`, and QC outputs are written under the same
-project folder: `outdir/output/<Sample_Project>/qc/fastqc/`,
+When a project folder is present, normalized FASTQs are written under
+`outdir/output/<project>/`, and QC outputs are written under the same
+project folder: `outdir/output/<project>/qc/fastqc/`,
 `outdir/output/<Sample_Project>/qc/fastp/`,
 `outdir/output/<Sample_Project>/qc/fastp_passthrough/`,
 `outdir/output/<Sample_Project>/qc/falco/<sample>_<R1|R2>/`,
@@ -39,12 +40,16 @@ When `--output-contract-file` is used, per-project QC, contamination, and MultiQ
 paths are exported in `project_qc_dirs`, `project_contamination_dirs`, and
 `project_multiqc_reports`.
 
+For AVITI runs, native `bases2fastq` output is preserved under
+`outdir/.demux_native/bases2fastq/`, while downstream stages consume the normalized
+`outdir/output/` layout.
+
 ## Usage
 
 Run:
 
 ```bash
-pixi run demux-pipeline --qc-tool <tool[,tool...]> --outdir OUTDIR --bcl_dir BCL_DIR --samplesheet SAMPLE_SHEET --threads N --contamination-tool <tool[,tool...]> ...
+pixi run demux-pipeline --platform <illumina|aviti> --qc-tool <tool[,tool...]> --outdir OUTDIR --input-dir RUN_DIR --samplesheet MANIFEST.csv --threads N --contamination-tool <tool[,tool...]> ...
 ```
 
 `--qc-tool` accepts one or more of: `fastqc`, `fastp`, `falco`.
@@ -53,6 +58,9 @@ pixi run demux-pipeline --qc-tool <tool[,tool...]> --outdir OUTDIR --bcl_dir BCL
 
 * Use comma-separated values to run multiple tools in one run (for example `--qc-tool fastqc,fastp`).
 * `none` must be used alone (`--contamination-tool none`) and disables contamination.
+* `--samplesheet` is the canonical manifest input for both platforms.
+  Illumina uses it as the `bcl-convert` sample sheet; AVITI uses it as the
+  `bases2fastq --run-manifest` input.
 * If `kraken` is selected, pass `--kraken-db`.
 * If `kraken_bracken` is selected, pass `--bracken-db` or `--kraken-db`.
 * If `fastq_screen` is selected, pass `--fastq-screen-conf`.
@@ -62,21 +70,35 @@ pixi run demux-pipeline --qc-tool <tool[,tool...]> --outdir OUTDIR --bcl_dir BCL
 
 ```bash
 pixi run demux-pipeline \
+  --platform illumina \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --input-dir /path/to/BCL_RUN_FOLDER \
   --samplesheet /path/to/SampleSheet.csv
+```
+
+AVITI demux + QC:
+
+```bash
+pixi run demux-pipeline \
+  --platform aviti \
+  --qc-tool fastqc \
+  --outdir ./demux_qc_out \
+  --threads 4 \
+  --input-dir /path/to/AVITI_RUN_FOLDER \
+  --samplesheet /path/to/RunManifest.csv
 ```
 
 Optional contamination screening (runs after the QC tool):
 
 ```bash
 pixi run demux-pipeline \
+  --platform illumina \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --input-dir /path/to/BCL_RUN_FOLDER \
   --samplesheet /path/to/SampleSheet.csv \
   --contamination-tool kraken_bracken \
   --kraken-db /path/to/kraken-db
@@ -86,10 +108,11 @@ Run multiple QC and contamination tools in one invocation:
 
 ```bash
 pixi run demux-pipeline \
+  --platform illumina \
   --qc-tool fastqc,fastp \
   --outdir ./demux_qc_out \
   --threads 4 \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --input-dir /path/to/BCL_RUN_FOLDER \
   --samplesheet /path/to/SampleSheet.csv \
   --contamination-tool kraken,fastq_screen \
   --kraken-db /path/to/kraken-db \
@@ -100,10 +123,11 @@ FastQ Screen:
 
 ```bash
 pixi run demux-pipeline \
+  --platform illumina \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --input-dir /path/to/BCL_RUN_FOLDER \
   --samplesheet /path/to/SampleSheet.csv \
   --contamination-tool fastq_screen \
   --fastq-screen-conf /path/to/fastq_screen.conf

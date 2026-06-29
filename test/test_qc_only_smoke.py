@@ -62,7 +62,7 @@ def test_demux_pipeline_smoke_mocked(tmp_path: Path) -> None:
             thread_budget=1,
             outdir=outdir,
             run_name="unit_test",
-            bcl_dir=tmp_path / "bcl",
+            input_dir=tmp_path / "bcl",
             samplesheet=tmp_path / "SampleSheet.csv",
         )
 
@@ -89,7 +89,7 @@ def test_pipeline_with_contamination(tmp_path: Path) -> None:
             thread_budget=4,
             outdir=outdir,
             run_name="unit_test",
-            bcl_dir=tmp_path / "bcl",
+            input_dir=tmp_path / "bcl",
             samplesheet=tmp_path / "SampleSheet.csv",
             contamination_tool="kraken",
             kraken_db=tmp_path / "db",
@@ -121,7 +121,7 @@ def test_pipeline_skips_contamination_when_not_requested(tmp_path: Path) -> None
             thread_budget=2,
             outdir=outdir,
             run_name="unit_test",
-            bcl_dir=tmp_path / "bcl",
+            input_dir=tmp_path / "bcl",
             samplesheet=tmp_path / "SampleSheet.csv",
         )
 
@@ -151,7 +151,7 @@ def test_pipeline_dispatches_multiple_qc_and_contamination_tools(tmp_path: Path)
             thread_budget=4,
             outdir=outdir,
             run_name="unit_test",
-            bcl_dir=tmp_path / "bcl",
+            input_dir=tmp_path / "bcl",
             samplesheet=tmp_path / "SampleSheet.csv",
             contamination_tool="kraken,fastq_screen",
             kraken_db=tmp_path / "db",

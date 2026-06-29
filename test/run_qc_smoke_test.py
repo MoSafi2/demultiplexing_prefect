@@ -79,9 +79,9 @@ def main(argv: list[str] | None = None) -> None:
         print(
             f"Smoke: demux_pipeline qc_tool={qc_tool!r} outdir={outdir}", flush=True
         )
-        bcl_dir = run_dir / "bcl"
+        input_dir = run_dir / "bcl"
         samplesheet = run_dir / "SampleSheet.csv"
-        bcl_dir.mkdir(parents=True, exist_ok=True)
+        input_dir.mkdir(parents=True, exist_ok=True)
         samplesheet.write_text("dummy\n", encoding="utf-8")
 
         def _mock_demux(**_) -> None:
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> None:
                 qc_tool=qc_tool,
                 thread_budget=args.threads,
                 outdir=outdir,
-                bcl_dir=bcl_dir,
+                input_dir=input_dir,
                 samplesheet=samplesheet,
             )
 

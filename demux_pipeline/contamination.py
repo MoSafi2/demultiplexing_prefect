@@ -6,7 +6,7 @@ from typing import Literal
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from prefect.futures import PrefectFutureList
-from demux_pipeline.demux import BCL_CONVERT_OUTDIR_NAME
+from demux_pipeline.demux import DEMUX_FASTQ_OUTDIR_NAME
 from demux_pipeline.models import Sample
 from demux_pipeline.process import require_executable, run_command
 from demux_pipeline.observability import record_asset
@@ -18,7 +18,7 @@ def _ensure_dir(path: Path) -> None:
 def _sample_contamination_root(outdir: Path, sample: Sample) -> Path:
     if not sample.project:
         return outdir / "contamination"
-    return outdir / BCL_CONVERT_OUTDIR_NAME / sample.project / "qc" / "contamination"
+    return outdir / DEMUX_FASTQ_OUTDIR_NAME / sample.project / "qc" / "contamination"
 
 
 def _bowtie2_index_exists(index_prefix: Path) -> bool:
@@ -343,4 +343,3 @@ def submit_contamination_tasks(
         )
     else:
         raise SystemExit(f"Unknown contamination tool: {contamination_tool}")
-

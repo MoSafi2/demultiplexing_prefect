@@ -164,7 +164,7 @@ def init_run_tracking(
     qc_tool: str,
     contamination_tool: str | None,
     thread_budget: int,
-    bcl_dir: Path | None,
+    input_dir: Path | None,
     samplesheet: Path | None,
 ) -> tuple[RunContext, Observer]:
     """Create RunContext + Observer and start pipeline tracking."""
@@ -180,7 +180,7 @@ def init_run_tracking(
         thread_budget=thread_budget,
         started_at=utc_now_iso(),
         inputs={
-            "bcl_dir": str(bcl_dir) if bcl_dir else None,
+            "input_dir": str(input_dir) if input_dir else None,
             "samplesheet": str(samplesheet) if samplesheet else None,
         },
     )

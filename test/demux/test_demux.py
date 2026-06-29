@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 import importlib.util
+from unittest.mock import patch
 
 import pytest  # type: ignore[import-not-found]
 
@@ -17,6 +18,7 @@ sys.path.insert(0, str(DEMUX_PIPELINE_DIR))
 spec = importlib.util.spec_from_file_location("prefect_demux", DEMUX_PY)
 assert spec is not None and spec.loader is not None
 demux_mod = importlib.util.module_from_spec(spec)
+sys.modules["prefect_demux"] = demux_mod
 spec.loader.exec_module(demux_mod)
 parse_fastq = demux_mod.parse_fastq
 
@@ -150,3 +152,89 @@ def test_write_samples_tsv(tmp_path: Path) -> None:
         "s1\t/tmp/s1_R1.fastq.gz\t\t\n"
         "s2\t/tmp/s2_R1.fastq.gz\t/tmp/s2_R2.fastq.gz\tp1\n"
     )
+
+
+def test_sample_ordinals_from_manifest_handles_illumina_data_section(tmp_path: Path) -> None:
+    manifest = tmp_path / "SampleSheet.csv"
+    manifest.write_text(
+        "[Header]\n"
+        "IEMFileVersion,4\n"
+        "[Data]\n"
+        "Sample_ID,Sample_Project\n"
+        "sampleA,project-a\n"
+        "sampleB,project-b\n",
+        encoding="utf-8",
+    )
+
+    assert demux_mod._sample_ordinals_from_manifest(manifest) == {
+        ("project-a", "sampleA"): 1,
+        ("project-b", "sampleB"): 2,
+    }
+
+
+def test_normalize_aviti_output_rewrites_samples_tree_into_output_contract(tmp_path: Path) -> None:
+    staged = tmp_path / "staged"
+    samples_root = staged / "Samples"
+    _touch(samples_root / "project-a" / "sampleA" / "sampleA_R1.fastq.gz")
+    _touch(samples_root / "project-a" / "sampleA" / "sampleA_R2.fastq.gz")
+    _touch(samples_root / "sampleB" / "sampleB_R1.fastq.gz")
+    _touch(samples_root / "Unassigned" / "Unassigned_R1.fastq.gz")
+
+    manifest = tmp_path / "RunManifest.csv"
+    manifest.write_text(
+        "sample_id,project\n"
+        "sampleA,project-a\n"
+        "sampleB,\n",
+        encoding="utf-8",
+    )
+
+    outdir = tmp_path / "out" / demux_mod.DEMUX_FASTQ_OUTDIR_NAME
+    demux_mod.normalize_aviti_output(
+        staged_output=staged,
+        demux_output=outdir,
+        manifest_path=manifest,
+    )
+
+    assert (outdir / "project-a" / "sampleA_S1_R1_001.fastq.gz").exists()
+    assert (outdir / "project-a" / "sampleA_S1_R2_001.fastq.gz").exists()
+    assert (outdir / "sampleB_S2_R1_001.fastq.gz").exists()
+    assert (outdir / "Undetermined_S0_R1_001.fastq.gz").exists()
+
+
+def test_demux_bcl_constructs_aviti_command(tmp_path: Path) -> None:
+    input_dir = tmp_path / "run"
+    input_dir.mkdir()
+    _touch(input_dir / "RunManifest.csv")
+    _touch(input_dir / "RunParameters.json")
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text("sample_id\nsampleA\n", encoding="utf-8")
+
+    commands: list[list[str]] = []
+
+    def _fake_run(cmd, **_kwargs):
+        commands.append(cmd)
+
+    with patch.object(demux_mod, "get_run_logger"), patch.object(
+        demux_mod, "_resolve_bases2fastq_binary", return_value="/usr/bin/bases2fastq"
+    ), patch.object(demux_mod, "run_command", side_effect=_fake_run), patch.object(
+        demux_mod, "record_asset"
+    ), patch.object(
+        demux_mod, "normalize_aviti_output"
+    ):
+        demux_mod.demux_bcl.fn(
+            input_dir=input_dir,
+            samplesheet=manifest,
+            outdir=tmp_path / "out",
+            platform="aviti",
+            extra_args=["--num-threads", "4"],
+        )
+
+    assert commands == [[
+        "/usr/bin/bases2fastq",
+        str(input_dir),
+        str(tmp_path / "out" / ".demux_native" / "bases2fastq"),
+        "--run-manifest",
+        str(manifest),
+        "--num-threads",
+        "4",
+    ]]

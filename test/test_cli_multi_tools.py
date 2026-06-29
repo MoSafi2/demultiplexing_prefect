@@ -27,7 +27,7 @@ def _import_cli():
 
 def _base_args(tmp_path: Path) -> list[str]:
     return [
-        "--bcl_dir",
+        "--input-dir",
         str(tmp_path / "bcl"),
         "--samplesheet",
         str(tmp_path / "SampleSheet.csv"),
@@ -109,8 +109,9 @@ def test_build_run_config_maps_validated_args(tmp_path: Path) -> None:
         ],
     )
     cfg = cli_mod.build_run_config(args)
-    assert cfg.bcl_dir == tmp_path / "bcl"
+    assert cfg.input_dir == tmp_path / "bcl"
     assert cfg.samplesheet == tmp_path / "SampleSheet.csv"
+    assert cfg.platform == "illumina"
     assert cfg.qc_tool == "fastqc,fastp"
     assert cfg.thread_budget == 3
     assert cfg.contamination_tool is None
@@ -127,3 +128,57 @@ def test_build_run_config_maps_output_contract_file(tmp_path: Path) -> None:
     )
     cfg = cli_mod.build_run_config(args)
     assert cfg.output_contract_file == contract_path
+
+
+def test_validate_args_accepts_aviti_platform_with_shared_samplesheet(tmp_path: Path) -> None:
+    cli_mod = _import_cli()
+    parser = cli_mod._build_parser()
+    args = cli_mod._validate_args(
+        parser,
+        _base_args(tmp_path) + ["--platform", "aviti"],
+    )
+    assert args.platform == "aviti"
+    assert args.input_dir == tmp_path / "bcl"
+
+
+def test_validate_args_accepts_matching_input_dir_and_bcl_dir(tmp_path: Path) -> None:
+    cli_mod = _import_cli()
+    parser = cli_mod._build_parser()
+    same = tmp_path / "run"
+    args = cli_mod._validate_args(
+        parser,
+        [
+            "--input-dir",
+            str(same),
+            "--bcl_dir",
+            str(same),
+            "--samplesheet",
+            str(tmp_path / "SampleSheet.csv"),
+            "--outdir",
+            str(tmp_path / "out"),
+            "--qc-tool",
+            "falco",
+        ],
+    )
+    assert args.input_dir == same
+
+
+def test_validate_args_rejects_conflicting_input_dir_and_bcl_dir(tmp_path: Path) -> None:
+    cli_mod = _import_cli()
+    parser = cli_mod._build_parser()
+    with pytest.raises(SystemExit):
+        cli_mod._validate_args(
+            parser,
+            [
+                "--input-dir",
+                str(tmp_path / "run-a"),
+                "--bcl_dir",
+                str(tmp_path / "run-b"),
+                "--samplesheet",
+                str(tmp_path / "SampleSheet.csv"),
+                "--outdir",
+                str(tmp_path / "out"),
+                "--qc-tool",
+                "falco",
+            ],
+        )

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import csv
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 from prefect import get_run_logger, task  # type: ignore[import-not-found]
 from demux_pipeline.models import Sample
@@ -11,14 +14,34 @@ from demux_pipeline.process import run_command
 from demux_pipeline.observability import record_asset
 
 
-# Parent `--outdir` contains this subdirectory with all bcl-convert artifacts (FASTQs, Reports, etc.).
-BCL_CONVERT_OUTDIR_NAME = "output"
+DEMUX_FASTQ_OUTDIR_NAME = "output"
+AVITI_NATIVE_OUTDIR = Path(".demux_native") / "bases2fastq"
+AVITI_SAMPLES_DIR_NAME = "Samples"
+
+ILLUMINA_SAMPLE_ID_KEYS = ("sample_id", "sampleid", "sample_name", "samplename")
+ILLUMINA_PROJECT_KEYS = ("sample_project", "sampleproject", "project")
 
 FASTQ_RE = re.compile(
     r"""^(?P<sample>[A-Za-z0-9_.-]+?)(?:_S\d+)?(?:_L(?P<lane>\d{3}))?_R(?P<read>[12])
     (?:_(?P<chunk>\d{3}))?\.(?P<ext>fastq|fq)(?:\.gz)?$""",
     re.VERBOSE | re.IGNORECASE,
 )
+FASTQ_READ_RE = re.compile(
+    r"(?i)^(?P<stem>.+?)(?:_S\d+)?(?:_L\d{3})?_R(?P<read>[12])(?:_(?P<chunk>\d{3}))?\.(?:fastq|fq)(?:\.gz)?$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestSampleEntry:
+    sample_name: str
+    project: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class NativeFastqGroup:
+    sample_name: str
+    project: str | None
+    reads: dict[int, list[Path]]
 
 
 def parse_fastq(path: Path):
@@ -39,9 +62,6 @@ def _group_fastqs(
 ) -> dict[tuple[str | None, str, int], dict[str, Path]]:
     iterator = root.rglob("*") if recursive else root.glob("*")
     paths = [path for path in iterator if path.is_file()]
-    has_top_level_fastq = any(
-        parse_fastq(path) for path in paths if path.parent == root
-    )
     grouped: dict[tuple[str | None, str, int], dict[str, Path]] = defaultdict(dict)
     for path in paths:
         if _is_under_qc_dir(root, path):
@@ -118,29 +138,276 @@ def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
             f.write(f"{sample.name}\t{sample.r1}\t{r2}\t{project}\n")
 
 
-def _resolve_bcl_convert_binary() -> str:
-    """Prefer ./bcl-convert (cwd), then copy next to this module, then PATH."""
+def _resolve_local_binary(*candidates: str) -> str | None:
     project_root = Path(__file__).resolve().parent
-    for local in (Path.cwd() / "bcl-convert", project_root / "bcl-convert"):
-        if local.is_file():
-            return str(local.resolve())
-    # Illumina docs commonly show `bcl-convert`, but some installs ship `bcl_convert`.
-    for candidate in ("bcl-convert", "bcl_convert"):
+    for candidate in candidates:
+        local_names = {candidate}
+        if candidate == "bcl_convert":
+            local_names.add("bcl-convert")
+        for local_name in local_names:
+            for local in (Path.cwd() / local_name, project_root / local_name):
+                if local.is_file():
+                    return str(local.resolve())
         found = shutil.which(candidate)
         if found is not None:
             return found
+    return None
+
+
+def _resolve_bcl_convert_binary() -> str:
+    """Prefer local copies, then PATH."""
+    found = _resolve_local_binary("bcl-convert", "bcl_convert")
+    if found is not None:
+        return found
     raise SystemExit(
         "Missing required binary on PATH: bcl-convert (or bcl_convert). "
         "Please install BCL Convert and ensure it is available on your PATH."
     )
 
 
+def _resolve_bases2fastq_binary() -> str:
+    found = _resolve_local_binary("bases2fastq")
+    if found is not None:
+        return found
+    raise SystemExit(
+        "Missing required binary on PATH: bases2fastq. "
+        "Please install Bases2Fastq and ensure it is available on your PATH."
+    )
+
+
+def _normalize_manifest_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _manifest_header_index(lines: list[str]) -> int:
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.lower() == "[data]":
+            return i + 1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("["):
+            continue
+        return i
+    raise RuntimeError("No manifest header found.")
+
+
+def _read_manifest_entries(manifest_path: Path) -> list[ManifestSampleEntry]:
+    lines = manifest_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if not lines:
+        return []
+    header_index = _manifest_header_index(lines)
+    csv_text = "\n".join(lines[header_index:]).strip()
+    if not csv_text:
+        return []
+    reader = csv.DictReader(csv_text.splitlines())
+    if reader.fieldnames is None:
+        return []
+    sample_key = None
+    project_key = None
+    normalized = {_normalize_manifest_key(name): name for name in reader.fieldnames}
+    for candidate in ILLUMINA_SAMPLE_ID_KEYS:
+        if candidate in normalized:
+            sample_key = normalized[candidate]
+            break
+    for candidate in ILLUMINA_PROJECT_KEYS:
+        if candidate in normalized:
+            project_key = normalized[candidate]
+            break
+    if sample_key is None:
+        raise RuntimeError(
+            f"Manifest {manifest_path} does not contain a recognizable sample column."
+        )
+
+    entries: list[ManifestSampleEntry] = []
+    for row in reader:
+        sample_name = (row.get(sample_key) or "").strip()
+        if not sample_name:
+            continue
+        if sample_name.lower() in {"undetermined", "unassigned"}:
+            continue
+        project = (row.get(project_key) or "").strip() if project_key else ""
+        entries.append(
+            ManifestSampleEntry(
+                sample_name=sample_name,
+                project=project or None,
+            )
+        )
+    return entries
+
+
+def _sample_ordinals_from_manifest(manifest_path: Path) -> dict[tuple[str | None, str], int]:
+    ordinals: dict[tuple[str | None, str], int] = {}
+    next_index = 1
+    for entry in _read_manifest_entries(manifest_path):
+        key = (entry.project, entry.sample_name)
+        if key in ordinals:
+            continue
+        ordinals[key] = next_index
+        next_index += 1
+    return ordinals
+
+
+def _guess_native_fastq_read(path: Path) -> tuple[int | None, int]:
+    parsed = parse_fastq(path)
+    if parsed:
+        return parsed["read"], parsed["chunk"]
+    match = FASTQ_READ_RE.match(path.name)
+    if match:
+        chunk = int(match.group("chunk")) if match.group("chunk") else 1
+        return int(match.group("read")), chunk
+    return None, 1
+
+
+def _native_sample_identity(samples_root: Path, fastq_path: Path) -> tuple[str | None, str]:
+    rel = fastq_path.relative_to(samples_root)
+    parent_parts = rel.parent.parts
+    parsed = parse_fastq(fastq_path)
+    parsed_name = parsed["sample"] if parsed else None
+
+    if len(parent_parts) >= 2:
+        return parent_parts[0], parent_parts[1]
+    if len(parent_parts) == 1:
+        return None, parent_parts[0]
+    if parsed_name:
+        return None, parsed_name
+    raise RuntimeError(f"Unable to infer sample identity from {fastq_path}")
+
+
+def _group_native_aviti_fastqs(samples_root: Path) -> list[NativeFastqGroup]:
+    grouped: dict[tuple[str | None, str], dict[int, list[Path]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for path in sorted(samples_root.rglob("*")):
+        if not path.is_file():
+            continue
+        read, _chunk = _guess_native_fastq_read(path)
+        if read not in (1, 2):
+            continue
+        project, sample_name = _native_sample_identity(samples_root, path)
+        grouped[(project, sample_name)][read].append(path)
+
+    result: list[NativeFastqGroup] = []
+    for (project, sample_name), reads in sorted(
+        grouped.items(), key=lambda item: ((item[0][0] or ""), item[0][1])
+    ):
+        result.append(
+            NativeFastqGroup(
+                sample_name=sample_name,
+                project=project,
+                reads={read: sorted(paths) for read, paths in reads.items()},
+            )
+        )
+    return result
+
+
+def _safe_fastq_name(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return safe.strip("_") or "sample"
+
+
+def _link_or_copy(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    try:
+        dest.hardlink_to(src)
+    except OSError:
+        shutil.copy2(src, dest)
+
+
+def _normalize_undetermined_fastqs(
+    *,
+    demux_output: Path,
+    unassigned_paths: Iterable[Path],
+) -> None:
+    grouped: dict[int, list[Path]] = defaultdict(list)
+    for path in unassigned_paths:
+        read, _chunk = _guess_native_fastq_read(path)
+        if read in (1, 2):
+            grouped[read].append(path)
+    for read, paths in grouped.items():
+        for chunk_index, src in enumerate(sorted(paths), start=1):
+            dest = demux_output / f"Undetermined_S0_R{read}_{chunk_index:03d}.fastq.gz"
+            _link_or_copy(src, dest)
+
+
+def normalize_aviti_output(
+    *,
+    staged_output: Path,
+    demux_output: Path,
+    manifest_path: Path,
+) -> None:
+    samples_root = staged_output / AVITI_SAMPLES_DIR_NAME
+    if not samples_root.is_dir():
+        raise RuntimeError(
+            f"Bases2Fastq output is missing the expected {AVITI_SAMPLES_DIR_NAME}/ directory: {samples_root}"
+        )
+    if demux_output.exists():
+        shutil.rmtree(demux_output)
+    demux_output.mkdir(parents=True, exist_ok=True)
+
+    manifest_ordinals = _sample_ordinals_from_manifest(manifest_path)
+    fallback_next = max(manifest_ordinals.values(), default=0) + 1
+    unassigned_paths: list[Path] = []
+
+    for group in _group_native_aviti_fastqs(samples_root):
+        sample_name = group.sample_name
+        if sample_name.lower() in {"unassigned", "undetermined"}:
+            for paths in group.reads.values():
+                unassigned_paths.extend(paths)
+            continue
+
+        key = (group.project, sample_name)
+        ordinal = manifest_ordinals.get(key)
+        if ordinal is None:
+            fallback_keys = ((None, sample_name), (group.project, sample_name))
+            for fallback_key in fallback_keys:
+                ordinal = manifest_ordinals.get(fallback_key)
+                if ordinal is not None:
+                    break
+        if ordinal is None:
+            ordinal = fallback_next
+            manifest_ordinals[key] = ordinal
+            fallback_next += 1
+
+        sample_dir = demux_output / group.project if group.project else demux_output
+        normalized_name = _safe_fastq_name(sample_name)
+        max_chunks = max((len(paths) for paths in group.reads.values()), default=0)
+        for chunk_index in range(max_chunks):
+            for read in (1, 2):
+                paths = group.reads.get(read, [])
+                if chunk_index >= len(paths):
+                    continue
+                dest = sample_dir / (
+                    f"{normalized_name}_S{ordinal}_R{read}_{chunk_index + 1:03d}.fastq.gz"
+                )
+                _link_or_copy(paths[chunk_index], dest)
+
+    _normalize_undetermined_fastqs(
+        demux_output=demux_output,
+        unassigned_paths=unassigned_paths,
+    )
+
+
+def _validate_aviti_input_dir(input_dir: Path) -> None:
+    required = ("RunManifest.csv", "RunParameters.json")
+    missing = [name for name in required if not (input_dir / name).exists()]
+    if missing:
+        raise SystemExit(
+            "Expected --input-dir to be an AVITI run directory containing: "
+            + ", ".join(required)
+            + f". Missing: {', '.join(missing)}"
+        )
+
+
 @task(name="demux_bcl", log_prints=True)
 def demux_bcl(
     *,
-    bcl_dir: Path,
+    input_dir: Path,
     samplesheet: Path,
     outdir: Path | str,
+    platform: str = "illumina",
     extra_args: list[str] | None = None,
     force: bool = True,
 ) -> None:
@@ -150,42 +417,83 @@ def demux_bcl(
     logger = get_run_logger()
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    bcl_output = outdir / BCL_CONVERT_OUTDIR_NAME
+    demux_output = outdir / DEMUX_FASTQ_OUTDIR_NAME
 
-    if not bcl_dir.exists() or not bcl_dir.is_dir():
-        raise SystemExit(f"Expected --bcl_dir to be an existing directory: {bcl_dir}")
+    if not input_dir.exists() or not input_dir.is_dir():
+        raise SystemExit(f"Expected --input-dir to be an existing directory: {input_dir}")
     if not samplesheet.exists() or not samplesheet.is_file():
         raise SystemExit(
             f"Expected --samplesheet to be an existing file: {samplesheet}"
         )
 
-    bcl_bin = _resolve_bcl_convert_binary()
+    platform_name = platform.lower().strip()
+    if platform_name == "illumina":
+        demux_bin = _resolve_bcl_convert_binary()
+        cmd = [
+            demux_bin,
+            "--bcl-input-directory",
+            str(input_dir),
+            "--output-directory",
+            str(demux_output),
+            "--sample-sheet",
+            str(samplesheet),
+            "--no-lane-splitting",
+            "true",
+            "--bcl-sampleproject-subdirectories",
+            "true",
+        ]
+        if force:
+            cmd.append("--force")
+        if extra_args:
+            cmd.extend(extra_args)
+        logger.info("bcl-convert: %s", " ".join(cmd))
+        run_command(cmd, capture_err_tail=80, step="demux", tool="bcl-convert")
+        record_asset(
+            demux_output,
+            step="demux",
+            tool="bcl-convert",
+            kind="directory",
+            metadata={"source": "bcl-convert --output-directory"},
+        )
+        return
 
-    cmd = [
-        bcl_bin,
-        "--bcl-input-directory",
-        str(bcl_dir),
-        "--output-directory",
-        str(bcl_output),
-        "--sample-sheet",
-        str(samplesheet),
-        # bcl-convert expects an explicit true/false after this flag (not a bare switch).
-        "--no-lane-splitting",
-        "true",
-        "--bcl-sampleproject-subdirectories",
-        "true",
-    ]
-    if force:
-        cmd.append("--force")
-    if extra_args:
-        cmd.extend(extra_args)
-    logger.info("bcl-convert: %s", " ".join(cmd))
-    run_command(cmd, capture_err_tail=80, step="demux", tool="bcl-convert")
-    record_asset(
-        bcl_output,
-        step="demux",
-        tool="bcl-convert",
-        kind="directory",
-        metadata={"source": "bcl-convert --output-directory"},
-    )
+    if platform_name == "aviti":
+        _validate_aviti_input_dir(input_dir)
+        native_root = outdir / AVITI_NATIVE_OUTDIR
+        native_root.parent.mkdir(parents=True, exist_ok=True)
+        if native_root.exists():
+            shutil.rmtree(native_root)
+        demux_bin = _resolve_bases2fastq_binary()
+        cmd = [
+            demux_bin,
+            str(input_dir),
+            str(native_root),
+            "--run-manifest",
+            str(samplesheet),
+        ]
+        if extra_args:
+            cmd.extend(extra_args)
+        logger.info("bases2fastq: %s", " ".join(cmd))
+        run_command(cmd, capture_err_tail=80, step="demux", tool="bases2fastq")
+        record_asset(
+            native_root,
+            step="demux",
+            tool="bases2fastq",
+            kind="directory",
+            metadata={"source": "bases2fastq native output"},
+        )
+        normalize_aviti_output(
+            staged_output=native_root,
+            demux_output=demux_output,
+            manifest_path=samplesheet,
+        )
+        record_asset(
+            demux_output,
+            step="demux",
+            tool="bases2fastq",
+            kind="directory",
+            metadata={"source": "normalized AVITI output"},
+        )
+        return
 
+    raise SystemExit(f"Unknown platform: {platform}")

@@ -10,12 +10,14 @@ from demux_pipeline.pipeline import demux_pipeline
 
 ALLOWED_QC_TOOLS = {"fastqc", "fastp", "falco"}
 ALLOWED_CONTAMINATION_TOOLS = {"kraken", "kraken_bracken", "fastq_screen", "none"}
+ALLOWED_PLATFORMS = {"illumina", "aviti"}
 
 
 @dataclass(frozen=True, slots=True)
 class PipelineRunConfig:
-    bcl_dir: Path
+    input_dir: Path
     samplesheet: Path
+    platform: str
     qc_tool: str
     thread_budget: int
     outdir: Path
@@ -61,6 +63,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--platform",
+        required=False,
+        default="illumina",
+        help="Demultiplexing platform: illumina or aviti. Default: illumina.",
+    )
+
+    parser.add_argument(
         "--qc-tool",
         required=True,
         default="falco",
@@ -101,16 +110,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--bcl_dir",
-        required=True,
+        "--input-dir",
+        required=False,
         type=Path,
-        help="BCL run folder for bcl-convert.",
+        help="Run folder passed to the selected demultiplexing backend.",
+    )
+    parser.add_argument(
+        "--bcl_dir",
+        required=False,
+        type=Path,
+        help="Deprecated alias for --input-dir.",
     )
     parser.add_argument(
         "--samplesheet",
         required=True,
         type=Path,
-        help="Sample sheet passed to bcl-convert as --sample-sheet.",
+        help=(
+            "Manifest CSV passed to the demultiplexing backend: "
+            "Illumina SampleSheet for bcl-convert, AVITI RunManifest for bases2fastq."
+        ),
     )
 
     parser.add_argument(
@@ -174,6 +192,20 @@ def _validate_args(
 ) -> argparse.Namespace:
     args = parser.parse_args(argv)
 
+    args.platform = str(args.platform).strip().lower()
+    if args.platform not in ALLOWED_PLATFORMS:
+        parser.error(
+            f"Unknown value for --platform: {args.platform}. "
+            f"Allowed: {', '.join(sorted(ALLOWED_PLATFORMS))}."
+        )
+
+    if args.input_dir is None and args.bcl_dir is None:
+        parser.error("--input-dir is required.")
+    if args.input_dir is not None and args.bcl_dir is not None:
+        if args.input_dir != args.bcl_dir:
+            parser.error("--input-dir and --bcl_dir must match when both are provided.")
+    args.input_dir = args.input_dir or args.bcl_dir
+
     try:
         qc_tools = _parse_tool_csv(
             args.qc_tool,
@@ -227,8 +259,9 @@ def _validate_args(
 
 def build_run_config(args: argparse.Namespace) -> PipelineRunConfig:
     return PipelineRunConfig(
-        bcl_dir=args.bcl_dir,
+        input_dir=args.input_dir,
         samplesheet=args.samplesheet,
+        platform=args.platform,
         qc_tool=args.qc_tool,
         thread_budget=args.threads,
         outdir=args.outdir,
@@ -253,8 +286,9 @@ def parse_and_build_config(argv: list[str] | None = None) -> PipelineRunConfig:
 
 def run_with_config(config: PipelineRunConfig) -> None:
     demux_pipeline(
-        bcl_dir=config.bcl_dir,
+        input_dir=config.input_dir,
         samplesheet=config.samplesheet,
+        platform=config.platform,
         qc_tool=config.qc_tool,
         thread_budget=config.thread_budget,
         outdir=config.outdir,

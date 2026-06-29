@@ -1,6 +1,6 @@
 # demux-pipeline
 
-Standalone demultiplexing, QC, and contamination CLI for Illumina runs.
+Standalone demultiplexing, QC, and contamination CLI for Illumina and AVITI runs.
 
 This repository is now CLI-first rather than BPM-template-first so Linkar and other
 orchestrators can call it directly without adding another environment wrapper.
@@ -29,9 +29,10 @@ pip install -e .
 
 ## Requirements
 
-System tools must be on your `PATH` depending on the mode you run:
+System tools must be on your `PATH` depending on the platform and mode you run:
 
-- `bcl-convert` for demultiplexing
+- `bcl-convert` for Illumina demultiplexing
+- `bases2fastq` for AVITI demultiplexing
 - `fastqc`, `fastp`, `falco`, `multiqc`, `kraken2`, `bracken`, `fastq_screen`, `bowtie2`
   according to the QC and contamination tools you select
 
@@ -41,10 +42,11 @@ Preferred invocation:
 
 ```bash
 pixi run demux-pipeline \
+  --platform illumina \
   --qc-tool falco \
   --outdir ./demux_qc_out \
   --threads 4 \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --input-dir /path/to/RUN_FOLDER \
   --samplesheet /path/to/SampleSheet.csv
 ```
 
@@ -61,6 +63,9 @@ python -m demux_pipeline.cli ...
 
 - Use comma-separated values to run multiple tools in one run, for example `--qc-tool fastqc,fastp`.
 - `none` must be used alone and disables contamination.
+- `--samplesheet` is the canonical manifest input for both platforms.
+  For Illumina it is the SampleSheet passed to `bcl-convert`; for AVITI it is the
+  RunManifest passed to `bases2fastq --run-manifest`.
 - If `kraken` is selected, pass `--kraken-db`.
 - If `kraken_bracken` is selected, pass `--bracken-db` or `--kraken-db`.
 - If `fastq_screen` is selected, pass `--fastq-screen-conf`.
@@ -72,21 +77,35 @@ Demux plus QC:
 
 ```bash
 pixi run demux-pipeline \
+  --platform illumina \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --input-dir /path/to/BCL_RUN_FOLDER \
   --samplesheet /path/to/SampleSheet.csv
+```
+
+AVITI demux plus QC:
+
+```bash
+pixi run demux-pipeline \
+  --platform aviti \
+  --qc-tool fastqc \
+  --outdir ./demux_qc_out \
+  --threads 4 \
+  --input-dir /path/to/AVITI_RUN_FOLDER \
+  --samplesheet /path/to/RunManifest.csv
 ```
 
 Optional contamination screening:
 
 ```bash
 pixi run demux-pipeline \
+  --platform illumina \
   --qc-tool fastqc \
   --outdir ./demux_qc_out \
   --threads 4 \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --input-dir /path/to/BCL_RUN_FOLDER \
   --samplesheet /path/to/SampleSheet.csv \
   --contamination-tool kraken_bracken \
   --kraken-db /path/to/kraken-db
@@ -96,10 +115,11 @@ Run multiple QC and contamination tools in one invocation:
 
 ```bash
 pixi run demux-pipeline \
+  --platform illumina \
   --qc-tool fastqc,fastp \
   --outdir ./demux_qc_out \
   --threads 4 \
-  --bcl_dir /path/to/BCL_RUN_FOLDER \
+  --input-dir /path/to/BCL_RUN_FOLDER \
   --samplesheet /path/to/SampleSheet.csv \
   --contamination-tool kraken,fastq_screen \
   --kraken-db /path/to/kraken-db \
@@ -134,7 +154,7 @@ DEMUX_ENABLE_PREFECT_ARTIFACTS=1 pixi run demux-pipeline ...
 
 All outputs go under `--outdir`:
 
-- `outdir/output/` for `bcl-convert` output
+- `outdir/output/` for normalized demultiplexed FASTQs
 - `outdir/fastqc/` for FastQC reports
 - `outdir/fastp/` for Fastp HTML and JSON
 - `outdir/fastp_passthrough/` for Fastp FASTQ outputs
@@ -142,9 +162,9 @@ All outputs go under `--outdir`:
 - `outdir/contamination/` for optional contamination outputs
 - `outdir/multiqc/` for MultiQC summaries
 
-When `Sample_Project` is present, bcl-convert writes FASTQs under
-`outdir/output/<Sample_Project>/`. The pipeline writes QC under the same project
-folder:
+When `Sample_Project` or the AVITI project folder is present, normalized FASTQs are
+written under `outdir/output/<project>/`. The pipeline writes QC under the same
+project folder:
 
 - `outdir/output/<Sample_Project>/*.fastq.gz`
 - `outdir/output/<Sample_Project>/qc/fastqc/`
@@ -160,6 +180,9 @@ discovery with columns `sample`, `r1`, `r2`, and `project`.
 When `--output-contract-file` is used, per-project QC, contamination, and MultiQC
 paths are exported in `project_qc_dirs`, `project_contamination_dirs`, and
 `project_multiqc_reports`.
+For AVITI runs, native `bases2fastq` artifacts are preserved under
+`outdir/.demux_native/bases2fastq/`, while downstream steps consume the normalized
+`outdir/output/` layout.
 
 ## Linkar integration advice
 

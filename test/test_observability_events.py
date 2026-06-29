@@ -64,7 +64,7 @@ def test_create_run_table_emits_artifact(tmp_path: Path) -> None:
             "outdir": "/tmp/out",
             "started_at": "2026-01-01T00:00:00+00:00",
             "thread_budget": 4,
-            "inputs": {"bcl_dir": "/tmp/bcl", "samplesheet": "/tmp/SampleSheet.csv"},
+            "inputs": {"input_dir": "/tmp/bcl", "samplesheet": "/tmp/SampleSheet.csv"},
         },
         "counts": {"events": 3, "assets": 2, "commands": 2, "phases": 2, "failures": 0},
         "durations_by_step": {

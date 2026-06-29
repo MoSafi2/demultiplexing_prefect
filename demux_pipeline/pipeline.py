@@ -16,7 +16,7 @@ from demux_pipeline.qc import (
 )
 from demux_pipeline.contamination import submit_contamination_tasks
 from demux_pipeline.demux import (
-    BCL_CONVERT_OUTDIR_NAME,
+    DEMUX_FASTQ_OUTDIR_NAME,
     _samples_from_fastq_dir,
     _write_samples_tsv,
     demux_bcl,
@@ -124,7 +124,7 @@ def write_sample_hashes(samples: list[Sample]):
 def _resolve_run_name(
     *,
     run_name: str | None = None,
-    bcl_dir: Path | None = None,
+    input_dir: Path | None = None,
     qc_tool: str = "falco",
     **_: Any,
 ) -> str:
@@ -154,14 +154,14 @@ def write_output_contract(
     project_qc_dirs = {
         project: str(qc_dir)
         for project in project_names
-        for qc_dir in [outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc"]
+        for qc_dir in [outdir / DEMUX_FASTQ_OUTDIR_NAME / project / "qc"]
         if qc_dir.exists()
     }
     project_contamination_dirs = {
         project: str(contam_dir)
         for project in project_names
         for contam_dir in [
-            outdir / BCL_CONVERT_OUTDIR_NAME / project / "qc" / "contamination"
+            outdir / DEMUX_FASTQ_OUTDIR_NAME / project / "qc" / "contamination"
         ]
         if contam_dir.exists()
     }
@@ -170,7 +170,7 @@ def write_output_contract(
         for project in project_names
         for report in [
             outdir
-            / BCL_CONVERT_OUTDIR_NAME
+            / DEMUX_FASTQ_OUTDIR_NAME
             / project
             / "qc"
             / "multiqc"
@@ -202,8 +202,9 @@ def write_output_contract(
 @flow(name="demux-pipeline", flow_run_name=_resolve_run_name, log_prints=True)
 def demux_pipeline(
     *,
-    bcl_dir: Path,
+    input_dir: Path,
     samplesheet: Path,
+    platform: str = "illumina",
     # Common
     qc_tool: str | list[str] = "falco",
     thread_budget: int = 4,
@@ -237,7 +238,7 @@ def demux_pipeline(
         qc_label,
         contamination_label,
         thread_budget,
-        bcl_dir,
+        input_dir,
         samplesheet,
     )
     logger = get_run_logger()
@@ -247,12 +248,14 @@ def demux_pipeline(
         # --- Stage 1: Demux ---
         observer.phase_started("demux")
         demux_bcl(
-            bcl_dir=bcl_dir,
+            input_dir=input_dir,
             samplesheet=samplesheet,
+            platform=platform,
             outdir=outdir_path,
+            extra_args=["--num-threads", str(thread_budget)] if platform == "aviti" else None,
         )
         observer.phase_finished("demux")
-        samples = _discover_samples(demux_dir=outdir_path / BCL_CONVERT_OUTDIR_NAME)
+        samples = _discover_samples(demux_dir=outdir_path / DEMUX_FASTQ_OUTDIR_NAME)
 
         if not samples:
             raise SystemExit("No samples found.")

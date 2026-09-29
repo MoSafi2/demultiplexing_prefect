@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import re
 from pathlib import Path
 from typing import Any  # used by run_multiqc signature (_qc_tasks: list[Any])
 
@@ -231,6 +232,81 @@ def run_fastp(
     if sample.paired:
         record_asset(out_r2, step="qc", tool="fastp", kind="fastq", sample=sample.name)
 
+    for extra_path in sample.additional_reads:
+        match = re.search(
+        r"_(R[12]|I[12])(?:_\d{3})?\.(?:fastq|fq)(?:\.gz)?$",
+        extra_path.name,
+        re.IGNORECASE,
+        )
+
+        read = match.group(1).upper() if match else extra_path.stem
+
+        extra_html = fastp_dir / f"{sample.name}_{read}.html"
+        extra_json = fastp_dir / f"{sample.name}_{read}.json"
+        extra_out = tmp_dir / f"{sample.name}_{read}.fastq.gz"
+
+        cmd = [
+            "fastp",
+            "-i",
+            str(extra_path),
+            "-o",
+            str(extra_out),
+            "--thread",
+            str(threads),
+            "--html",
+            str(extra_html),
+            "--json",
+            str(extra_json),
+        
+            # Keep the same no-modification policy as the existing R1/R2 call.
+            "--disable_length_filtering",
+            "--disable_adapter_trimming",
+            "--disable_quality_filtering",
+            "--disable_trim_poly_g",
+        ]
+
+        logger.info(
+            "fastp (additional read %s): %s",
+            read,
+            " ".join(cmd),
+        )
+
+        run_command(
+            cmd,
+            step="qc",
+            tool="fastp",
+            sample=sample.name,
+            capture_err_tail=80,
+        )
+
+        record_asset(
+            extra_html,
+            step="qc",
+            tool="fastp",
+            kind="report_html",
+            sample=sample.name,
+            metadata={"read": read},
+        )
+
+        record_asset(
+            extra_json,
+            step="qc",
+            tool="fastp",
+            kind="report_json",
+            sample=sample.name,
+            metadata={"read": read},
+        )
+
+        record_asset(
+            extra_out,
+            step="qc",
+            tool="fastp",
+            kind="fastq",
+            sample=sample.name,
+            metadata={"read": read},
+        )   
+
+
     return out_r1
 
 
@@ -241,9 +317,15 @@ def run_falco(
 ) -> None:
     logger = get_run_logger()
 
-    for read, path in [("R1", sample.r1), ("R2", sample.r2)]:
-        if path is None:
-            continue
+    for path in sample.get_paths():
+        match = re.search(
+            r"_(R[12]|I[12])(?:_\d{3})?\.(?:fastq|fq)(?:\.gz)?$",
+            path.name,
+            re.IGNORECASE,
+        )   
+
+        read = match.group(1).upper() if match else path.stem
+
 
         falco_dir = _sample_project_dir(outdir / "falco", sample) / f"{sample.name}_{read}"
         _ensure_dir(falco_dir)

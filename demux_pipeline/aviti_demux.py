@@ -18,7 +18,7 @@ ILLUMINA_SAMPLE_ID_KEYS = ("sample_id", "sampleid", "sample_name", "samplename")
 ILLUMINA_PROJECT_KEYS = ("sample_project", "sampleproject", "project")
 
 FASTQ_READ_RE = re.compile(
-    r"(?i)^(?P<stem>.+?)(?:_S\d+)?(?:_L\d{3})?_R(?P<read>[12])(?:_(?P<chunk>\d{3}))?\.(?:fastq|fq)(?:\.gz)?$"
+    r"(?i)^(?P<stem>.+?)(?:_S\d+)?(?:_L\d{3})?_(?P<read_type>[RI])(?P<read>[12])(?:_(?P<chunk>\d{3}))?\.(?:fastq|fq)(?:\.gz)?$"
 )
 SECTION_HEADER_RE = re.compile(r"^\[(?P<name>[^\]]+)\]\s*(?:,.*)?$")
 
@@ -33,7 +33,7 @@ class ManifestSampleEntry:
 class NativeFastqGroup:
     sample_name: str
     project: str | None
-    reads: dict[int, list[Path]]
+    reads: dict[tuple[str, int], list[Path]]
 
 
 def _resolve_bases2fastq_binary() -> str:
@@ -140,15 +140,20 @@ def _sample_ordinals_from_manifest(manifest_path: Path) -> dict[tuple[str | None
     return ordinals
 
 
-def _guess_native_fastq_read(path: Path) -> tuple[int | None, int]:
-    parsed = parse_fastq(path)
-    if parsed:
-        return parsed["read"], parsed["chunk"]
+def _guess_native_fastq_read(path: Path) -> tuple[str | None, int, int]:
     match = FASTQ_READ_RE.match(path.name)
+
     if match:
         chunk = int(match.group("chunk")) if match.group("chunk") else 1
-        return int(match.group("read")), chunk
-    return None, 1
+        return match.group("read_type").upper(), int(match.group("read")), chunk
+
+    parsed = parse_fastq(path)
+
+    if parsed:
+        return "R", parsed["read"], parsed["chunk"]
+
+    return None, 0, 1
+
 
 
 def _native_sample_identity(samples_root: Path, fastq_path: Path) -> tuple[str | None, str]:
@@ -167,17 +172,18 @@ def _native_sample_identity(samples_root: Path, fastq_path: Path) -> tuple[str |
 
 
 def _group_native_aviti_fastqs(samples_root: Path) -> list[NativeFastqGroup]:
-    grouped: dict[tuple[str | None, str], dict[int, list[Path]]] = defaultdict(
+    grouped: dict[tuple[str | None, str], dict[tuple[str, int], list[Path]]] = defaultdict(
         lambda: defaultdict(list)
     )
     for path in sorted(samples_root.rglob("*")):
         if not path.is_file():
             continue
-        read, _chunk = _guess_native_fastq_read(path)
-        if read not in (1, 2):
+        read_type, read, _chunk = _guess_native_fastq_read(path)
+        if read_type not in {"R", "I"} or read not in (1, 2):
             continue
         project, sample_name = _native_sample_identity(samples_root, path)
-        grouped[(project, sample_name)][read].append(path)
+        grouped[(project, sample_name)][(read_type, read)].append(path)
+
 
     result: list[NativeFastqGroup] = []
     for (project, sample_name), reads in sorted(
@@ -305,23 +311,26 @@ def _planned_normalized_aviti_fastqs(
         normalized_name = _safe_fastq_name(sample_name)
         max_chunks = max((len(paths) for paths in group.reads.values()), default=0)
         for chunk_index in range(max_chunks):
-            for read in (1, 2):
-                paths = group.reads.get(read, [])
+            for read_type, read in (("R", 1), ("R", 2), ("I", 1), ("I", 2)):
+                paths = group.reads.get((read_type, read), [])
                 if chunk_index >= len(paths):
                     continue
                 rel_dest = sample_prefix / (
-                    f"{normalized_name}_S{ordinal}_R{read}_{chunk_index + 1:03d}.fastq.gz"
+                    f"{normalized_name}_S{ordinal}_{read_type}{read}_{chunk_index + 1:03d}.fastq.gz"
                 )
-                planned[rel_dest] = paths[chunk_index]
 
-    grouped_unassigned: dict[int, list[Path]] = defaultdict(list)
+    planned[rel_dest] = paths[chunk_index]
+
+
+    grouped_unassigned: dict[tuple[str, int], list[Path]] = defaultdict(list)
     for path in unassigned_paths:
-        read, _chunk = _guess_native_fastq_read(path)
-        if read in (1, 2):
-            grouped_unassigned[read].append(path)
-    for read, paths in grouped_unassigned.items():
+        read_type, read, _chunk = _guess_native_fastq_read(path)
+        if read_type in {"R", "I"} and read in (1, 2):
+            grouped_unassigned[(read_type, read)].append(path)
+    for (read_type, read), paths in grouped_unassigned.items():
         for chunk_index, src in enumerate(sorted(paths), start=1):
-            planned[Path(f"Undetermined_S0_R{read}_{chunk_index:03d}.fastq.gz")] = src
+            planned[Path(f"Undetermined_S0_{read_type}{read}_{chunk_index:03d}.fastq.gz")] = src
+
 
     return planned
 

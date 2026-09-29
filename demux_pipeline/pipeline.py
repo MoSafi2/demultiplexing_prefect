@@ -86,14 +86,15 @@ def _write_discovered_manifest(samples: list[Sample], outdir: Path) -> Path:
 
 
 def _get_projects_samples(samples: list[Sample]) -> dict[Path, list[Path]]:
-    pp = list(set([x.r1.parent for x in samples]))
-    pp = {p: [] for p in pp}
+    pp = list(set(sample.r1.parent for sample in samples))
+    pp = {path: [] for path in pp}
+
     for sample in samples:
-        if sample.r1:
-            pp[sample.r1.parent].append(sample.r1)
-        if sample.r2:
-            pp[sample.r2.parent].append(sample.r2)
+        for path in sample.get_paths():
+            pp[path.parent].append(path)
+
     return pp
+
 
 
 def _hash_paths(paths: list[Path]) -> list[str]:

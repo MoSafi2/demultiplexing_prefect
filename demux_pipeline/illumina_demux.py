@@ -11,10 +11,15 @@ from demux_pipeline.models import Sample
 DEMUX_FASTQ_OUTDIR_NAME = "output"
 
 FASTQ_RE = re.compile(
-    r"""^(?P<sample>[A-Za-z0-9_.-]+?)(?:_S\d+)?(?:_L(?P<lane>\d{3}))?_R(?P<read>[12])
-    (?:_(?P<chunk>\d{3}))?\.(?P<ext>fastq|fq)(?:\.gz)?$""",
+    r"""^(?P<sample>[A-Za-z0-9_.-]+?)
+    (?:_S\d+)?
+    (?:_L(?P<lane>\d{3}))?
+    _(?P<read_type>[RI])(?P<read>[12])
+    (?:_(?P<chunk>\d{3}))?
+    \.(?P<ext>fastq|fq)(?:\.gz)?$""",
     re.VERBOSE | re.IGNORECASE,
 )
+
 
 
 def parse_fastq(path: Path):
@@ -22,12 +27,15 @@ def parse_fastq(path: Path):
     if not match:
         return None
 
+
     return {
-        "sample": match.group("sample"),
-        "read": int(match.group("read")),
-        "lane": int(match.group("lane")) if match.group("lane") else None,
-        "chunk": int(match.group("chunk")) if match.group("chunk") else 0,
+    "sample": match.group("sample"),
+    "read_type": match.group("read_type").upper(),
+    "read": int(match.group("read")),
+    "lane": int(match.group("lane")) if match.group("lane") else None,
+    "chunk": int(match.group("chunk")) if match.group("chunk") else 0,
     }
+
 
 
 def _is_under_qc_dir(root: Path, path: Path) -> bool:
@@ -62,7 +70,8 @@ def _group_fastqs(
         parsed = parse_fastq(path)
         if not parsed:
             continue
-        read_key = f"R{parsed['read']}"
+        
+        read_key = f"{parsed['read_type']}{parsed['read']}"
         project = _project_from_fastq_path(root, path)
         grouped[project, parsed["sample"], parsed["chunk"]][read_key] = path
     return grouped
@@ -84,9 +93,14 @@ def _samples_from_fastq_dir(
     ):
         if "R1" not in reads:
             continue
-        samples.append(
-            Sample(name=sample, r1=reads["R1"], r2=reads.get("R2"), project=project)
-        )
+        additional_reads = tuple(
+    reads[read]
+    for read in ("I1", "I2")
+    if read in reads
+)
+
+    samples.append(
+        Sample(name=sample,r1=reads["R1"],r2=reads.get("R2"),project=project,additional_reads=additional_reads)
 
     return samples
 
@@ -95,8 +109,17 @@ def _write_samples_tsv(samples: list[Sample], path: Path) -> None:
     with path.open("w") as handle:
         for sample in samples:
             r2 = str(sample.r2) if sample.r2 is not None else ""
+            additional = "\t".join(str(path) for path in sample.additional_reads)
             project = sample.project or ""
-            handle.write(f"{sample.name}\t{sample.r1}\t{r2}\t{project}\n")
+
+            handle.write(
+                f"{sample.name}\t"
+                f"{sample.r1}\t"
+                f"{r2}\t"
+                f"{additional}\t"
+                f"{project}\n"
+            )
+
 
 
 def _resolve_local_binary(*candidates: str) -> str | None:

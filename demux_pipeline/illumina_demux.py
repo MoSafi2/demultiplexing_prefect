@@ -11,7 +11,7 @@ from demux_pipeline.models import Sample
 DEMUX_FASTQ_OUTDIR_NAME = "output"
 
 FASTQ_RE = re.compile(
-    r"""^(?P<sample>[A-Za-z0-9_.-]+?)
+    r"""^(?P<sample>[A-Za-z0-9_.-]+)
     (?:_S\d+)?
     (?:_L(?P<lane>\d{3}))?
     _(?P<read_type>[RI])(?P<read>[12])

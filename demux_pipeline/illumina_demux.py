@@ -105,8 +105,8 @@ def _samples_from_fastq_dir(
             if read in reads
         )
 
-    samples.append(
-        Sample(name=sample,r1=reads["R1"],r2=reads.get("R2"),project=project,additional_reads=additional_reads)
+        samples.append(
+            Sample(name=sample,r1=reads["R1"],r2=reads.get("R2"),project=project,additional_reads=additional_reads)
     )
 
     return samples

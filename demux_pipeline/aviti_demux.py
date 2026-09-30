@@ -319,7 +319,7 @@ def _planned_normalized_aviti_fastqs(
                     f"{normalized_name}_S{ordinal}_{read_type}{read}_{chunk_index + 1:03d}.fastq.gz"
                 )
 
-    planned[rel_dest] = paths[chunk_index]
+                planned[rel_dest] = paths[chunk_index]
 
 
     grouped_unassigned: dict[tuple[str, int], list[Path]] = defaultdict(list)

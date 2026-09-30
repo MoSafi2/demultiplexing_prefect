@@ -92,7 +92,13 @@ def _samples_from_fastq_dir(
         grouped.items(), key=lambda item: (item[0][0] or "", item[0][1], item[0][2])
     ):
         if "R1" not in reads:
-            continue
+                       
+                    raise RuntimeError(
+                            f"FASTQ sample {sample!r} "
+                            f"(project={project!r}, chunk={_chunk}) "
+                            f"has no R1. Found: {sorted(reads)}"
+                        )
+            
         additional_reads = tuple(
     reads[read]
     for read in ("I1", "I2")

@@ -11,7 +11,7 @@ from demux_pipeline.models import Sample
 DEMUX_FASTQ_OUTDIR_NAME = "output"
 
 FASTQ_RE = re.compile(
-    r"""^(?P<sample>[A-Za-z0-9_.-]+)
+    r"""^(?P<sample>[A-Za-z0-9_.-]+?)
     (?:_S\d+)?
     (?:_L(?P<lane>\d{3}))?
     _(?P<read_type>[RI])(?P<read>[12])
@@ -100,10 +100,10 @@ def _samples_from_fastq_dir(
                         )
             
         additional_reads = tuple(
-    reads[read]
-    for read in ("I1", "I2")
-    if read in reads
-)
+            reads[read]
+            for read in ("I1", "I2")
+            if read in reads
+        )
 
     samples.append(
         Sample(name=sample,r1=reads["R1"],r2=reads.get("R2"),project=project,additional_reads=additional_reads)

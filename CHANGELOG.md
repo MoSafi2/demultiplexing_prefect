@@ -6,7 +6,10 @@ The repository does not currently contain historical git tags, so versions befor
 published releases.
 
 ## 0.1.0 - 2026-06-29
-
+- Added support for situation when I1/2 reads are needed:
+  - class `Sample` is modified with additional slot `additional_reads`, so that additional fastq files can be included in the demux output
+  - The normalization process of fastq file names has been adapted to also process additional fastq files after initial demultiplex
+  - file discovery logic has been changed for MD5 and QC process, so that additional fastq files can be processed properly
 - Converted the repository into a standalone `demux-pipeline` CLI with a packaged
   `pyproject.toml` entry point, replacing the earlier BPM-template-oriented shape.
 - Added AVITI support through `bases2fastq`, including run-manifest handling,
